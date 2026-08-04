@@ -165,6 +165,18 @@ Two approaches were considered:
 - `app/components/RightPanel.tsx` — tab bar (one per linked Canvas, plus "+") with the *active* canvas's own tldraw instance mounted below it, keyed by canvas id (`persistenceKey` `canvas-${canvasId}`) so switching tabs is a local remount, not a network operation.
 - Corner button (`PDFViewer.tsx`) toggles the panel; it's rendered with `z-[400]` because tldraw's own style panel uses up to `z-index: 300` and would otherwise sit on top of it.
 
+## Surface 3 Fix Pass — Split Layout & Active Panel Tracking (2026-08-04)
+
+Three UX/layout bugs were found after Surface 3 shipped and fixed in the same pass, before cross-layer drawing begins:
+
+**Resizable split.** The PDF panel and the linked-canvas panel are laid out as a split pane inside `PageShell` (`app/components/PDFViewer.tsx`), with a draggable divider (`role="separator"`) between them. Dragging updates `rightPanelWidth` state, clamped so the PDF panel never goes below 360px and the canvas panel never goes below 260px. The width is persisted to `localStorage` (`marginal:rightPanelWidth`) — deliberately **not** routed through `src/storage/db.ts`, since it's pure UI layout state, not application data the rest of the system needs to know about.
+
+**Bounded panel container.** Both the PDF panel and the linked-canvas panel are now wrapped in a `border border-[#2a2a2a] rounded-md overflow-hidden` container with a small inset from the app-shell background, so each reads as a distinct panel. This is a wrapper-level fix only — it does not touch the Surface 2 coordinate decision (the PDF bitmap embedded inside the page's own tldraw store at (0,0) native size); that remains correct and unchanged.
+
+**Active panel tracking (`activePanel`).** Before this fix, opening the right panel mounted a second full tldraw instance next to the first, and tldraw's default UI (toolbar, style panel) doesn't know or care that another instance exists — both showed their own chrome simultaneously. `PageShell` now tracks `activePanel: 'page' | 'canvas'`, set via `onPointerDownCapture` on each panel's wrapper div (so clicking or drawing anywhere in a panel claims it, no dedicated focus-tracking needed). Each `Tldraw` instance receives `hideUi={activePanel !== <that panel>}` — the inactive one renders canvas content only, no toolbar/style panel/menus. Both instances stay mounted and fully interactive underneath; only the UI chrome is conditional. This is still tldraw's stock UI, just conditionally shown — no custom toolbar was built (that stays scoped to Polish per build-order.md).
+
+`activePanel` is deliberately **not** a one-off toolbar patch: cross-layer drawing (next milestone) needs to know which panel a drag started in — the PDF page or the active linked canvas — to route a stroke's screen coordinates into the correct coordinate space and, on crossing the panel boundary, split it into the two tagged segments described in [Linked Canvases & Spillover](#linked-canvases--spillover-surface-3). The tracking mechanism built here is exactly the signal that milestone needs; nothing about it is Surface-3-specific.
+
 ## Storage Architecture
 
 **IndexedDB via Dexie** is the only persistence layer for v1.

@@ -89,29 +89,40 @@ On PDF: pen/shapes/text draw to page OR active canvas (see below)
 
 ### Fixed Dimensions
 
-PDF page rendered at native aspect ratio, matching source page dimensions. Non-resizable.
+The PDF page's own content (the rendered bitmap) is at native aspect ratio, matching source page dimensions, and non-resizable. The *panel* it renders inside is bounded and resizable — see Bounded Panel & Resizable Split below.
+
+### Bounded Panel & Resizable Split
+
+**Fixed 2026-08-04** (was a bug: the PDF page previously rendered full-bleed as if it were the entire canvas surface, with no visible container). The PDF page and the linked-canvas panel each render inside a distinct, bordered container (`border-subtle`, 1px, `overflow: hidden`, per STYLING.md §7) with a small inset from the app-shell background, so each reads as a panel rather than as the whole surface.
+
+When the right panel is open, a draggable divider sits between the two panels:
+- Drag to resize; both sides respect a minimum width (PDF panel: 360px, canvas panel: 260px) so neither can be dragged to zero.
+- The divider is a thin hit-target that highlights on hover/drag; cursor becomes `col-resize`.
+- The split position is pure UI state, not app data — persisted to `localStorage` (`marginal:rightPanelWidth`), not through the Dexie data-access layer. It survives reloads but is not part of any entity.
 
 ### Corner Button
 
-Top-right of page, small + unobtrusive. Toggles right panel (linked canvases).
+Top-right of the PDF panel, small + unobtrusive. Toggles right panel (linked canvases). Rendered above tldraw's own UI (which can use z-index up to 300).
 
 ### Direct Markup
 
 Tools (pen, shapes, text) draw directly on the page itself. Always available, regardless of right panel state.
 
-### Toolbar Context
+### Toolbar Context — Active Panel Tracking
 
-On PDF, toolbar scopes tools to either:
-- Direct markup (on page)
-- Active linked canvas (if right panel open)
+**Fixed 2026-08-04** (was a bug: opening the right panel mounted a second tldraw instance with its own full UI, so two toolbars/style panels were visible simultaneously). Only one panel's toolbar is shown at a time, tied to `activePanel: 'page' | 'canvas'` — a small piece of app-level state (not persisted) tracking which panel was most recently interacted with (clicked into, drawn on). The other panel's tldraw instance mounts with `hideUi`, showing only its canvas content, no chrome.
 
-Visual indicator shows which target is active.
+- Defaults to `'page'` when a PDF page is opened.
+- Clicking/drawing anywhere in the PDF panel sets it to `'page'`; clicking/drawing anywhere in the linked-canvas panel (including its tab bar or the "+"/spill buttons) sets it to `'canvas'`.
+- This is not just a toolbar fix — cross-layer drawing (next milestone) reads the same `activePanel` state to know which panel a drag started in, so it can route the stroke correctly. See [Architecture § Active Panel Tracking](./architecture.md#active-panel-tracking-surface-3-fix-pass).
+
+This is still tldraw's stock default UI, just conditionally shown — the custom floating-pill toolbar (STYLING.md §5) remains scoped to Polish, not built here.
 
 ## Linked Canvas Panel
 
 ### Appearance
 
-Right side of screen. Slides in/out. Tabs at top.
+Right side of screen, inside its own bordered panel next to the PDF panel (see Bounded Panel & Resizable Split above). Slides in/out via the corner button. Tabs at top.
 
 ### Tab Behavior
 

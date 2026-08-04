@@ -15,6 +15,7 @@ interface RightPanelProps {
   onDelete: (id: string) => void;
   onClose: () => void;
   onAddTestSpillover: () => void;
+  hideUi: boolean;
 }
 
 // Tab bar + the active canvas's own tldraw instance. Each Canvas is a fully
@@ -30,6 +31,7 @@ export function RightPanel({
   onDelete,
   onClose,
   onAddTestSpillover,
+  hideUi,
 }: RightPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -46,7 +48,7 @@ export function RightPanel({
   };
 
   return (
-    <div className="w-80 shrink-0 flex flex-col border-l border-[#2a2a2a] bg-[#1c1c1e]">
+    <div className="w-full h-full flex flex-col bg-[#1c1c1e]">
       <div className="flex items-center border-b border-[#2a2a2a] overflow-x-auto">
         {canvases.map((canvas) => {
           const isActive = canvas.id === activeCanvasId;
@@ -123,7 +125,12 @@ export function RightPanel({
 
       <div className="flex-1">
         {activeCanvasId && (
-          <Tldraw key={activeCanvasId} persistenceKey={`canvas-${activeCanvasId}`} autoFocus />
+          <Tldraw
+            key={activeCanvasId}
+            persistenceKey={`canvas-${activeCanvasId}`}
+            autoFocus
+            hideUi={hideUi}
+          />
         )}
       </div>
 

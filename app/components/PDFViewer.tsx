@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AssetRecordType,
   Box,
@@ -72,7 +72,7 @@ export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
   const page = pages[Math.min(pageIndex, pages.length - 1)];
 
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 flex flex-col overflow-hidden">
       {/* Page navigation: single-page view with prev/next */}
       <div className="flex items-center justify-center gap-4 px-4 py-2 border-b border-[#2a2a2a]">
         <button
@@ -106,14 +106,78 @@ interface PageShellProps {
   pdfDocumentId: string;
 }
 
+const MIN_PAGE_PANEL_WIDTH = 360;
+const MIN_RIGHT_PANEL_WIDTH = 260;
+const DEFAULT_RIGHT_PANEL_WIDTH = 340;
+const RIGHT_PANEL_WIDTH_STORAGE_KEY = "marginal:rightPanelWidth";
+
 // Owns everything scoped to a single page: the direct-markup tldraw
-// instance, the corner button, the linked-canvas right panel, and which
-// canvas is currently active (source of truth: Page.activeCanvasId).
+// instance, the corner button, the linked-canvas right panel, the
+// resizable split between them, and which canvas is currently active
+// (source of truth: Page.activeCanvasId).
 function PageShell({ page, pdfDocumentId }: PageShellProps) {
   const [pageEditor, setPageEditor] = useState<Editor | null>(null);
   const [canvases, setCanvases] = useState<Canvas[]>([]);
   const [activeCanvasId, setActiveCanvasIdState] = useState<string | null>(page.activeCanvasId);
   const [panelOpen, setPanelOpen] = useState(false);
+
+  // Which mounted tldraw instance most recently had pointer activity — only
+  // that one shows its default toolbar/style panel, so two tldraw mounts
+  // never show two toolbars at once. This is also the mechanism cross-layer
+  // drawing (next milestone) will read to know which panel a drag started
+  // in, so it isn't a one-off UI patch — see architecture.md.
+  const [activePanel, setActivePanel] = useState<"page" | "canvas">("page");
+
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
+  const rightPanelWidthRef = useRef(rightPanelWidth);
+  const [isResizingSplit, setIsResizingSplit] = useState(false);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY);
+    const parsed = stored ? Number(stored) : NaN;
+    if (!Number.isNaN(parsed)) {
+      setRightPanelWidth(parsed);
+      rightPanelWidthRef.current = parsed;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSplit) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const container = splitContainerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const widthFromCursor = rect.right - e.clientX;
+      const maxWidth = Math.max(
+        MIN_RIGHT_PANEL_WIDTH,
+        rect.width - MIN_PAGE_PANEL_WIDTH
+      );
+      const clamped = Math.min(maxWidth, Math.max(MIN_RIGHT_PANEL_WIDTH, widthFromCursor));
+      rightPanelWidthRef.current = clamped;
+      setRightPanelWidth(clamped);
+    };
+
+    const handlePointerUp = () => {
+      setIsResizingSplit(false);
+      window.localStorage.setItem(
+        RIGHT_PANEL_WIDTH_STORAGE_KEY,
+        String(rightPanelWidthRef.current)
+      );
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingSplit]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,12 +251,17 @@ function PageShell({ page, pdfDocumentId }: PageShellProps) {
   };
 
   return (
-    <div className="flex-1 flex overflow-hidden">
-      <div className="relative flex-1">
+    <div ref={splitContainerRef} className="flex-1 flex overflow-hidden p-2 gap-0">
+      <div
+        className="relative flex-1 min-w-0 border border-[#2a2a2a] rounded-md overflow-hidden bg-[#121212]"
+        style={{ minWidth: MIN_PAGE_PANEL_WIDTH }}
+        onPointerDownCapture={() => setActivePanel("page")}
+      >
         <PageMarkupEditor
           page={page}
           pdfDocumentId={pdfDocumentId}
           onEditorMount={setPageEditor}
+          hideUi={panelOpen && activePanel !== "page"}
         />
         <button
           onClick={() => setPanelOpen((open) => !open)}
@@ -204,17 +273,39 @@ function PageShell({ page, pdfDocumentId }: PageShellProps) {
           ⧉
         </button>
       </div>
+
       {panelOpen && (
-        <RightPanel
-          canvases={canvases}
-          activeCanvasId={activeCanvasId}
-          onActivate={handleActivate}
-          onCreate={handleCreate}
-          onRename={handleRename}
-          onDelete={handleDelete}
-          onClose={() => setPanelOpen(false)}
-          onAddTestSpillover={handleAddTestSpillover}
-        />
+        <>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              setIsResizingSplit(true);
+            }}
+            className={`w-2 shrink-0 mx-1 cursor-col-resize rounded-full transition-colors ${
+              isResizingSplit ? "bg-[#3a3a3a]" : "bg-transparent hover:bg-[#2a2a2a]"
+            }`}
+            title="Drag to resize"
+          />
+          <div
+            className="shrink-0 border border-[#2a2a2a] rounded-md overflow-hidden"
+            style={{ width: rightPanelWidth }}
+            onPointerDownCapture={() => setActivePanel("canvas")}
+          >
+            <RightPanel
+              canvases={canvases}
+              activeCanvasId={activeCanvasId}
+              onActivate={handleActivate}
+              onCreate={handleCreate}
+              onRename={handleRename}
+              onDelete={handleDelete}
+              onClose={() => setPanelOpen(false)}
+              onAddTestSpillover={handleAddTestSpillover}
+              hideUi={activePanel !== "canvas"}
+            />
+          </div>
+        </>
       )}
     </div>
   );
@@ -224,6 +315,7 @@ interface PageMarkupEditorProps {
   page: Page;
   pdfDocumentId: string;
   onEditorMount: (editor: Editor) => void;
+  hideUi: boolean;
 }
 
 // One tldraw instance per Page, persisted under `page-${pageId}`.
@@ -237,7 +329,7 @@ interface PageMarkupEditorProps {
 //
 // Spillover shapes (Surface 3) also live in this same store, tagged with
 // `meta.canvasId` — see app/components/spillover.ts.
-function PageMarkupEditor({ page, pdfDocumentId, onEditorMount }: PageMarkupEditorProps) {
+function PageMarkupEditor({ page, pdfDocumentId, onEditorMount, hideUi }: PageMarkupEditorProps) {
   const handleMount = (editor: Editor) => {
     // Frame the page immediately — dimensions are known from the Page row.
     editor.zoomToBounds(new Box(0, 0, page.width, page.height), {
@@ -249,7 +341,12 @@ function PageMarkupEditor({ page, pdfDocumentId, onEditorMount }: PageMarkupEdit
 
   return (
     <div className="w-full h-full">
-      <Tldraw persistenceKey={`page-${page.id}`} onMount={handleMount} autoFocus />
+      <Tldraw
+        persistenceKey={`page-${page.id}`}
+        onMount={handleMount}
+        autoFocus
+        hideUi={hideUi}
+      />
     </div>
   );
 }
