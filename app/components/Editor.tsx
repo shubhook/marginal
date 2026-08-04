@@ -3,11 +3,18 @@
 import { Tldraw } from "tldraw";
 import "tldraw/tldraw.css";
 
-export function Editor() {
+interface EditorProps {
+  notebookId?: string | null;
+}
+
+export function Editor({ notebookId }: EditorProps) {
+  // Use notebook ID in persistence key so each notebook has its own canvas state
+  const persistenceKey = notebookId ? `notebook-${notebookId}` : "marginal-editor-default";
+
   return (
     <div className="w-full h-full">
       <Tldraw
-        persistenceKey="marginal-editor"
+        persistenceKey={persistenceKey}
         autoFocus
       />
     </div>

@@ -37,7 +37,7 @@ export function AppContainer() {
       <main className="flex-1 flex flex-col bg-[#121212]">
         {activeNotebookId ? (
           <div className="flex-1">
-            <Editor />
+            <Editor notebookId={activeNotebookId} />
           </div>
         ) : (
           <div className="flex-1 flex items-center justify-center">
