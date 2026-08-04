@@ -87,9 +87,9 @@ On PDF: pen/shapes/text draw to page OR active canvas (see below)
 
 ## PDF Page View
 
-### Fixed Dimensions
+### Fixed Dimensions & Camera Lock
 
-The PDF page's own content (the rendered bitmap) is at native aspect ratio, matching source page dimensions, and non-resizable. The *panel* it renders inside is bounded and resizable — see Bounded Panel & Resizable Split below.
+The PDF page's own content (the rendered bitmap) is at native aspect ratio, matching source page dimensions. **Fixed 2026-08-05:** the panel is a locked, fixed viewer, not a second pannable canvas — after the initial fit, drag-pan, wheel/pinch-zoom, and keyboard zoom shortcuts are all disabled on the PDF panel specifically (tldraw's camera-options `isLocked`). The whole page always stays visible, letterboxed on whichever axis has slack if the panel's aspect ratio doesn't match the page's (`fit-min` — see [Architecture § Camera Lock](./architecture.md#surface-3-fix-pass-ii--shared-capsule-camera-lock-header-alignment-2026-08-05) for the full rationale and why `fit-max` — which would crop the page — was rejected). Drawing/markup interaction is unaffected; only camera movement is locked. The linked-canvas panel keeps a normal, fully free camera.
 
 ### Bounded Panel & Resizable Split
 
@@ -99,30 +99,33 @@ When the right panel is open, a draggable divider sits between the two panels:
 - Drag to resize; both sides respect a minimum width (PDF panel: 360px, canvas panel: 260px) so neither can be dragged to zero.
 - The divider is a thin hit-target that highlights on hover/drag; cursor becomes `col-resize`.
 - The split position is pure UI state, not app data — persisted to `localStorage` (`marginal:rightPanelWidth`), not through the Dexie data-access layer. It survives reloads but is not part of any entity.
+- Resizing the PDF panel re-fits its (locked) camera automatically to the new width — the page never looks mis-framed after a drag.
+
+### Unified Header Row
+
+**Fixed 2026-08-05** (was a bug: the PDF page nav and the canvas tab bar rendered as two separate strips at different heights). Both now render in one row, same height, text baseline-aligned: page nav (‹ Prev · Page N/M · Next ›) on the left, canvas tabs on the right when the panel is open. The row's left/right split lines up exactly with the panel divider beneath it, including while dragging.
 
 ### Corner Button
 
-Top-right of the PDF panel, small + unobtrusive. Toggles right panel (linked canvases). Rendered above tldraw's own UI (which can use z-index up to 300).
+Top-right of the PDF panel, small + unobtrusive. Toggles right panel (linked canvases).
 
 ### Direct Markup
 
 Tools (pen, shapes, text) draw directly on the page itself. Always available, regardless of right panel state.
 
-### Toolbar Context — Active Panel Tracking
+### Toolbar — the Capsule
 
-**Fixed 2026-08-04** (was a bug: opening the right panel mounted a second tldraw instance with its own full UI, so two toolbars/style panels were visible simultaneously). Only one panel's toolbar is shown at a time, tied to `activePanel: 'page' | 'canvas'` — a small piece of app-level state (not persisted) tracking which panel was most recently interacted with (clicked into, drawn on). The other panel's tldraw instance mounts with `hideUi`, showing only its canvas content, no chrome.
+**Fixed 2026-08-05, replacing an earlier "hide the inactive toolbar" approach** (2026-08-04: opening the right panel mounted a second tldraw instance with its own full UI, so two toolbars/style panels were visible at once; the first fix hid one instance's stock UI based on which panel was active — see below for why that wasn't sufficient). Both the PDF panel and the linked-canvas panel now always mount with tldraw's UI hidden entirely. The **only** toolbar on screen is the Capsule: one component, rendered once, fixed to the bottom-center of the split view (spanning whichever panels are currently visible, not the whole browser window).
 
-- Defaults to `'page'` when a PDF page is opened.
-- Clicking/drawing anywhere in the PDF panel sets it to `'page'`; clicking/drawing anywhere in the linked-canvas panel (including its tab bar or the "+"/spill buttons) sets it to `'canvas'`.
-- This is not just a toolbar fix — cross-layer drawing (next milestone) reads the same `activePanel` state to know which panel a drag started in, so it can route the stroke correctly. See [Architecture § Active Panel Tracking](./architecture.md#active-panel-tracking-surface-3-fix-pass).
-
-This is still tldraw's stock default UI, just conditionally shown — the custom floating-pill toolbar (STYLING.md §5) remains scoped to Polish, not built here.
+- Buttons: select, pen, rectangle, text, eraser, undo, redo. Minimal styling for now (dark pill, visible active state) — full STYLING.md §5 treatment (final icon set, exact spacing) is still a Polish-phase task; only the *architecture* of a shared toolbar was pulled forward, not its visual polish.
+- Every button acts on whichever panel's editor the pointer most recently entered — `activePanel: 'page' | 'canvas'`, the same tracking concept introduced in the first fix pass, now driving Capsule routing instead of `hideUi` toggling. The Capsule's active-tool highlight updates live to match.
+- This is not a one-off UI patch: cross-layer drawing (next milestone) reads the same tracking to know which panel a drag started in. See [Architecture § Shared Capsule](./architecture.md#surface-3-fix-pass-ii--shared-capsule-camera-lock-header-alignment-2026-08-05).
 
 ## Linked Canvas Panel
 
 ### Appearance
 
-Right side of screen, inside its own bordered panel next to the PDF panel (see Bounded Panel & Resizable Split above). Slides in/out via the corner button. Tabs at top.
+Right side of screen, inside its own bordered panel next to the PDF panel (see Bounded Panel & Resizable Split above). Slides in/out via the corner button. Tabs render in the unified header row (see above), aligned with the PDF page nav.
 
 ### Tab Behavior
 

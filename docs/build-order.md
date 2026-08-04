@@ -125,11 +125,17 @@ The coordinate-transform system underpins every later surface. If the math is wr
 
 **Known issue found and fixed along the way:** the corner button was initially invisible — tldraw's own style panel renders at `z-index: 300`, silently covering an overlay button with a lower z-index. Fixed by giving the button `z-[400]`.
 
+**Fix Pass I (2026-08-04):** resizable split (draggable divider, min-widths, `localStorage`-persisted), bounded panel containers (border + inset around both panels instead of full-bleed), and a first attempt at "one toolbar at a time" via per-instance `hideUi` toggling based on which panel was last interacted with.
+
+**Fix Pass II (2026-08-05):** the `hideUi`-toggling approach from Fix Pass I was superseded by a shared floating toolbar (the "Capsule") that belongs to neither tldraw instance and routes actions to whichever panel the pointer is over. **This pulled the custom toolbar forward from Polish** (see [Architecture](./architecture.md#surface-3-fix-pass-ii--shared-capsule-camera-lock-header-alignment-2026-08-05) for why: tldraw's default UI has no concept of a toolbar shared across two editor instances, so the two-toolbar problem is architectural, not visual — hiding/showing stock chrome can only ever show one editor's *own* UI). The Capsule's actual visual styling stays minimal and rough; full STYLING.md §5 treatment (icon set, exact spacing) remains a genuine Polish-phase task, not done here. This same pass also fixed a header-alignment bug (PDF page nav and canvas tabs now share one row) and locked the PDF panel's camera (`isLocked` + `fit-min` constraints) so it behaves as a fixed viewer panel rather than a second pannable canvas — necessary groundwork for cross-layer drawing, which needs a stable coordinate frame to anchor a cross-boundary stroke to.
+
 ### 5. Cross-Layer Drawing
 
 **Purpose:** Draw continuously across PDF page ↔ linked canvas boundary.
 
-**Depends on:** the spillover-per-canvas rendering mechanism built in Surface 3 (tagged shapes in the page's tldraw store, visibility keyed to `activeCanvasId`) — this milestone is about *creating* those tagged shapes by splitting a real cross-boundary stroke, not inventing a new storage mechanism.
+**Depends on:**
+- The spillover-per-canvas rendering mechanism built in Surface 3 (tagged shapes in the page's tldraw store, visibility keyed to `activeCanvasId`) — this milestone is about *creating* those tagged shapes by splitting a real cross-boundary stroke, not inventing a new storage mechanism.
+- The `activePanel`/`activeEditorRef` tracking and the PDF panel's camera lock from the Fix Pass II above — knowing which panel a drag started in, and having a stable (non-pannable) coordinate frame for the PDF side, are both prerequisites for routing and anchoring a cross-boundary stroke correctly.
 
 **Deliverables:**
 - Transparent screen-space overlay capturing drags across panel boundary

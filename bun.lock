@@ -5,6 +5,7 @@
     "": {
       "name": "marginal",
       "dependencies": {
+        "@tldraw/state-react": "5.2.5",
         "dexie": "^4.4.4",
         "next": "16.3.0",
         "pdfjs-dist": "^6.2.108",

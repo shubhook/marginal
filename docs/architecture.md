@@ -165,17 +165,52 @@ Two approaches were considered:
 - `app/components/RightPanel.tsx` — tab bar (one per linked Canvas, plus "+") with the *active* canvas's own tldraw instance mounted below it, keyed by canvas id (`persistenceKey` `canvas-${canvasId}`) so switching tabs is a local remount, not a network operation.
 - Corner button (`PDFViewer.tsx`) toggles the panel; it's rendered with `z-[400]` because tldraw's own style panel uses up to `z-index: 300` and would otherwise sit on top of it.
 
-## Surface 3 Fix Pass — Split Layout & Active Panel Tracking (2026-08-04)
+## Surface 3 Fix Pass I — Split Layout & Active Panel Tracking (2026-08-04)
 
-Three UX/layout bugs were found after Surface 3 shipped and fixed in the same pass, before cross-layer drawing begins:
+Two UX/layout bugs were found after Surface 3 shipped and fixed:
 
 **Resizable split.** The PDF panel and the linked-canvas panel are laid out as a split pane inside `PageShell` (`app/components/PDFViewer.tsx`), with a draggable divider (`role="separator"`) between them. Dragging updates `rightPanelWidth` state, clamped so the PDF panel never goes below 360px and the canvas panel never goes below 260px. The width is persisted to `localStorage` (`marginal:rightPanelWidth`) — deliberately **not** routed through `src/storage/db.ts`, since it's pure UI layout state, not application data the rest of the system needs to know about.
 
-**Bounded panel container.** Both the PDF panel and the linked-canvas panel are now wrapped in a `border border-[#2a2a2a] rounded-md overflow-hidden` container with a small inset from the app-shell background, so each reads as a distinct panel. This is a wrapper-level fix only — it does not touch the Surface 2 coordinate decision (the PDF bitmap embedded inside the page's own tldraw store at (0,0) native size); that remains correct and unchanged.
+**Bounded panel container.** Both the PDF panel and the linked-canvas panel are wrapped in a `border border-[#2a2a2a] rounded-md overflow-hidden` container with a small inset from the app-shell background, so each reads as a distinct panel. This is a wrapper-level fix only — it does not touch the Surface 2 coordinate decision (the PDF bitmap embedded inside the page's own tldraw store at (0,0) native size); that remains correct and unchanged.
 
-**Active panel tracking (`activePanel`).** Before this fix, opening the right panel mounted a second full tldraw instance next to the first, and tldraw's default UI (toolbar, style panel) doesn't know or care that another instance exists — both showed their own chrome simultaneously. `PageShell` now tracks `activePanel: 'page' | 'canvas'`, set via `onPointerDownCapture` on each panel's wrapper div (so clicking or drawing anywhere in a panel claims it, no dedicated focus-tracking needed). Each `Tldraw` instance receives `hideUi={activePanel !== <that panel>}` — the inactive one renders canvas content only, no toolbar/style panel/menus. Both instances stay mounted and fully interactive underneath; only the UI chrome is conditional. This is still tldraw's stock UI, just conditionally shown — no custom toolbar was built (that stays scoped to Polish per build-order.md).
+A third bug from this same pass — two tldraw instances each showing their own toolbar — was originally fixed by conditionally hiding each instance's stock UI based on which panel was active (`hideUi={activePanel !== <that panel>}`). **That approach was superseded one fix-pass later** by the shared Capsule toolbar — see below. `activePanel` survives as a concept, but now drives Capsule routing instead of `hideUi` toggling.
 
-`activePanel` is deliberately **not** a one-off toolbar patch: cross-layer drawing (next milestone) needs to know which panel a drag started in — the PDF page or the active linked canvas — to route a stroke's screen coordinates into the correct coordinate space and, on crossing the panel boundary, split it into the two tagged segments described in [Linked Canvases & Spillover](#linked-canvases--spillover-surface-3). The tracking mechanism built here is exactly the signal that milestone needs; nothing about it is Surface-3-specific.
+## Surface 3 Fix Pass II — Shared Capsule, Camera Lock, Header Alignment (2026-08-05)
+
+Three more issues, addressed together because the underlying fix for one (tracking which panel is "active") is reused directly by cross-layer drawing, the next milestone:
+
+**Why the custom toolbar got pulled forward from Polish.** STYLING.md §5 scopes the floating-pill toolbar as a Polish-phase *visual* task. This isn't that: tldraw's default UI has no concept of "one toolbar shared across two editor instances" — hiding/showing each instance's stock chrome (Fix Pass I's approach) can only show one editor's *own* toolbar, never a toolbar that belongs to neither. Building a toolbar that isn't owned by either `Tldraw` mount was the only way to get to "exactly one toolbar, ever" — an architectural requirement, not a styling one. What's still deferred to Polish: the actual STYLING.md §5 treatment (final icon set, exact spacing/shadow rules). The Capsule built here is functionally complete but visually rough on purpose.
+
+**Header alignment.** The PDF page nav (prev/page/next) and the canvas tab bar used to render as two separate strips at different heights. Both are now rendered by `PageShell` in one unified header row: page nav on the left (`flex-1`, same `MIN_PAGE_PANEL_WIDTH` as the body's PDF panel), and, when the right panel is open, the canvas tab bar on the right at a width that exactly matches `rightPanelWidth`, separated by a spacer (`SPLIT_GAP_PX = 16`) sized to match the body row's divider footprint (`mx-1` + `w-2` + `mx-1`). Because the header and body share the same left/right padding and the same computed widths, the header's left/right split always lines up with the divider beneath it, including while dragging.
+
+**Camera lock — the PDF panel is a fixed viewer, not a second canvas.** Before this fix, the PDF page mounted inside a normal tldraw camera (free pan/zoom), which is wrong for two reasons: it behaves like a second infinite canvas instead of a bounded document viewer, and a continuously-movable viewport has no stable frame to anchor a cross-boundary stroke to (next milestone). Fixed via tldraw's built-in camera-options API (`editor.setCameraOptions`), not by hand-rolling input interception:
+
+```ts
+editor.setCameraOptions({
+  isLocked: true,
+  wheelBehavior: "none",
+  constraints: {
+    bounds: new Box(0, 0, page.width, page.height),
+    padding: { x: 32, y: 32 },
+    origin: { x: 0.5, y: 0.5 },
+    initialZoom: "fit-min",
+    baseZoom: "fit-min",
+    behavior: "fixed",
+  },
+});
+editor.zoomToBounds(bounds, { inset: 32, force: true }); // initial fit, matches prior framing exactly
+```
+
+- `isLocked: true` disables every user-driven camera path (drag-pan, wheel/pinch-zoom, keyboard zoom shortcuts) at the source — tldraw's own camera methods (`pan`, `zoomIn`, `zoomToFit`, `resetZoom`, etc.) each check `cameraOptions.isLocked` and no-op unless called with `{ force: true }`. Shape creation/editing is untouched; only camera movement is gated.
+- **Fit choice: `fit-min` (letterboxed containment).** Given a panel whose aspect ratio doesn't match the page's, `fit-min` scales by whichever axis requires the *smaller* zoom — i.e. the page's full extent is always entirely visible, letterboxed on whichever axis has slack. (`fit-max` would instead crop the page to fill the panel, which was rejected — the point of a document viewer is that you can always see the whole page.) This matches the pre-lock `zoomToBounds(..., { inset: 32 })` framing, so the initial view is visually unchanged.
+- Resizing the split (dragging the divider) resizes the PDF panel's container; tldraw's internal resize handling recomputes the constrained camera automatically since the camera is defined in terms of `constraints` rather than a one-time fit — verified by dragging the divider and confirming the page re-centers/re-fits at the new width without any manual refit call.
+- The linked-canvas panel is unaffected — it keeps a normal, fully free camera, since it's a real infinite canvas, not a fixed document panel.
+
+**Shared Capsule toolbar (`app/components/Capsule.tsx`).** Both the PDF panel's `Tldraw` and the linked-canvas panel's `Tldraw` now mount with `hideUi` unconditionally — neither ever shows its own chrome. `Capsule` is the only toolbar, rendered once by `PageShell`, positioned `absolute bottom-4 left-1/2 -translate-x-1/2` relative to the split container (so it's centered over whichever panels are currently visible — just the PDF panel when closed, both combined when open — not the whole browser viewport, which would misalign it against the sidebar). Buttons: select, pen (draw), rectangle (geo), text, eraser, undo, redo — the STYLING.md §5 tool list plus undo/redo, styled minimally (dark pill, visible active state) with full visual treatment deferred to Polish.
+
+**Active-editor routing.** `PageShell` holds `activeEditorRef` (a `RefObject<Editor | null>`) plus an `activeEditorVersion` counter used purely to force React to re-run the Capsule's reactive subscription when the ref's target changes (a plain ref mutation doesn't trigger a re-render on its own). `activePanel: 'page' | 'canvas'` — the same state introduced in Fix Pass I — is set via `onPointerEnter` on each panel's wrapper div; an effect re-points `activeEditorRef.current` to whichever editor (`pageEditor` or `canvasEditor`) corresponds to `activePanel` and bumps the version whenever the target actually changes (including when the canvas panel remounts a new `Tldraw` instance on tab switch while the pointer is still over it). Every Capsule button reads `activeEditorRef.current` at click time — never a closed-over editor — so it always targets whichever panel the cursor last entered. The Capsule's active-tool highlight uses `useValue` from `@tldraw/state-react` with `[activeEditorRef, version]` as deps, so it both re-subscribes when the target editor changes and reactively reflects that editor's `currentToolId` changing.
+
+**This is shared groundwork, not a toolbar-only fix.** Cross-layer drawing (next milestone) needs exactly this signal — which panel the pointer is in — to know whether a drag is starting on the PDF page or in the active linked canvas, so it can route the drag's coordinates into the right space and, on crossing the panel boundary, split the stroke into its two tagged segments (see [Linked Canvases & Spillover](#linked-canvases--spillover-surface-3)). `activePanel`/`activeEditorRef` from this fix pass is that mechanism, not a new one to be built next milestone.
 
 ## Storage Architecture
 
