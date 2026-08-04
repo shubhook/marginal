@@ -24,7 +24,7 @@ import {
 import { renderPageBitmap } from "@/src/pdf/renderer";
 import { addTestSpillover, applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
 import { RightPanel } from "./RightPanel";
-import { Capsule } from "./Capsule";
+import { FloatingTldrawUi } from "./FloatingTldrawUi";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 
 interface PDFViewerProps {
@@ -357,13 +357,11 @@ function PageShell({
         )}
       </div>
 
-      {/* Shared floating toolbar — belongs to neither tldraw instance, both
-          of which mount with hideUi. Centered over the split-view width
-          (both panels combined when open, just the PDF panel when closed),
-          not the whole browser viewport. */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[500]">
-        <Capsule activeEditorRef={activeEditorRef} version={activeEditorVersion} />
-      </div>
+      {/* tldraw's own toolbar + style panel, floating over both panels and
+          bound to whichever one the pointer last entered — see
+          FloatingTldrawUi.tsx. Both underlying Tldraw instances mount with
+          hideUi; this is the only chrome on screen. */}
+      <FloatingTldrawUi activeEditorRef={activeEditorRef} version={activeEditorVersion} />
     </div>
   );
 }

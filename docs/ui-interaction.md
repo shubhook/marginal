@@ -6,10 +6,10 @@ Layout, navigation, and user interaction patterns.
 
 ```
 ┌─────────────────────────────────────────────┐
-│ Sidebar (left)  │  Main Surface            │
-│ Notebooks       │  (Canvas/PDF)    │Panel  │
-│ Boards          │                  │(opt)  │
-│ PDFs            │                  │       │
+│ Sidebar (left)  │  Main Surface             │
+│ Notebooks       │  (Canvas/PDF)    │Panel   │
+│ Boards          │                  │(opt)   │
+│ PDFs            │                  │        │
 └─────────────────────────────────────────────┘
 ```
 
@@ -41,7 +41,16 @@ This is not a file browser. Use sidebar to switch context. Keyboard shortcuts (f
 
 ### Collapsible
 
-Future: `Cmd+B` toggles sidebar (currently always visible).
+**Built 2026-08-05.** The sidebar has two modes:
+
+- **Expanded** (default, 256px): the full notebook list — create, inline rename, delete — unchanged from before.
+- **Collapsed** (48px icon rail): three icon buttons — a toggle to re-expand, "+" to create a notebook, and a switcher (☰) that opens a floating popover listing every notebook by name to pick one to switch to.
+
+The switcher (☰) is available in **both** modes (also present in the expanded header, next to the collapse toggle) — it's a quick-jump popover, not exclusive to the collapsed rail. Clicking a notebook in it switches immediately and closes the popover; it closes on outside click or `Escape` too.
+
+**Rationale:** Surface 3 already puts two panels on screen (PDF page + linked canvas) before the sidebar is even counted. An always-expanded 256px sidebar competes directly with that on a laptop or tablet-sized viewport, so collapsing it to a rail is a real space-usability need, not a nice-to-have. The collapsed/expanded preference persists to `localStorage` (`marginal:sidebarCollapsed`) — pure UI state, not app data, same pattern as the resizable split (§ PDF Page View below) and not routed through `src/storage/db.ts`.
+
+`Cmd+B` as a keyboard shortcut for this toggle is still future work, not built here.
 
 ### Notebook List
 
@@ -105,6 +114,8 @@ When the right panel is open, a draggable divider sits between the two panels:
 
 **Fixed 2026-08-05** (was a bug: the PDF page nav and the canvas tab bar rendered as two separate strips at different heights). Both now render in one row, same height, text baseline-aligned: page nav (‹ Prev · Page N/M · Next ›) on the left, canvas tabs on the right when the panel is open. The row's left/right split lines up exactly with the panel divider beneath it, including while dragging.
 
+**Per-panel symmetry:** the page nav is centered *within its own panel's width* (the left section of the header row), not across the full window — and canvas tabs stay left-aligned within their panel, matching normal tab-bar convention (tabs are never centered). This was re-verified (2026-08-05) by measuring the nav's content bounding box against its section's bounding box directly in the browser — they share the same center point, confirmed independent of window width. If this ever looks off in practice, check `PageShell`'s header row markup in `PDFViewer.tsx` first (the left section is a `flex-1` div with `justify-center`, matching the same width formula as the PDF panel below it) before assuming new work is needed.
+
 ### Corner Button
 
 Top-right of the PDF panel, small + unobtrusive. Toggles right panel (linked canvases).
@@ -113,13 +124,19 @@ Top-right of the PDF panel, small + unobtrusive. Toggles right panel (linked can
 
 Tools (pen, shapes, text) draw directly on the page itself. Always available, regardless of right panel state.
 
-### Toolbar — the Capsule
+### Toolbar & Style Panel — tldraw's Own UI, Shared
 
-**Fixed 2026-08-05, replacing an earlier "hide the inactive toolbar" approach** (2026-08-04: opening the right panel mounted a second tldraw instance with its own full UI, so two toolbars/style panels were visible at once; the first fix hid one instance's stock UI based on which panel was active — see below for why that wasn't sufficient). Both the PDF panel and the linked-canvas panel now always mount with tldraw's UI hidden entirely. The **only** toolbar on screen is the Capsule: one component, rendered once, fixed to the bottom-center of the split view (spanning whichever panels are currently visible, not the whole browser window).
+**Fixed 2026-08-05, replacing a hand-built minimal toolbar** (the "Capsule": select/pen/rectangle/text/eraser/undo/redo only, built one pass earlier to solve the two-toolbars-at-once bug). That reduced set silently dropped real functionality — no color/fill/dash/size style panel, no hand tool, arrow, sticky note, image upload, or more-tools overflow. Rebuilding those individually wasn't worth it, so this pass swaps in tldraw's *actual* `DefaultToolbar` and `DefaultStylePanel` components instead, re-bound to whichever panel is active.
 
-- Buttons: select, pen, rectangle, text, eraser, undo, redo. Minimal styling for now (dark pill, visible active state) — full STYLING.md §5 treatment (final icon set, exact spacing) is still a Polish-phase task; only the *architecture* of a shared toolbar was pulled forward, not its visual polish.
-- Every button acts on whichever panel's editor the pointer most recently entered — `activePanel: 'page' | 'canvas'`, the same tracking concept introduced in the first fix pass, now driving Capsule routing instead of `hideUi` toggling. The Capsule's active-tool highlight updates live to match.
-- This is not a one-off UI patch: cross-layer drawing (next milestone) reads the same tracking to know which panel a drag started in. See [Architecture § Shared Capsule](./architecture.md#surface-3-fix-pass-ii--shared-capsule-camera-lock-header-alignment-2026-08-05).
+Both the PDF panel and the linked-canvas panel always mount with tldraw's UI hidden entirely (`hideUi`). The **only** chrome on screen is:
+- The real tldraw toolbar — bottom-center, spanning the split view (both panels combined when open, just the PDF panel when closed — not the whole browser window). Full native tool set: select, hand, pen, eraser, arrow, text, sticky note, image, shapes (rectangle/ellipse/triangle/diamond/star/etc.), laser, highlighter, frame, with the same "more tools" overflow behavior as stock tldraw.
+- The real tldraw style panel — top-right of the split view, offset below the corner button. Full color/fill/dash/size controls, same as stock tldraw.
+
+Every action targets whichever panel's editor the pointer most recently entered — `activePanel: 'page' | 'canvas'`, the same tracking concept from the earlier fix pass, now driving which editor these shared components are bound to (via React context) instead of `hideUi` toggling. Both the active-tool highlight and the style panel's values update live to match whichever panel has focus.
+
+This is not a one-off UI patch: cross-layer drawing (next milestone) reads the same tracking to know which panel a drag started in. See [Architecture § Shared Toolbar & Style Panel](./architecture.md#surface-3-fix-pass-iii--tldraws-own-ui-collapsible-sidebar-2026-08-05).
+
+Visual styling is still stock tldraw, not STYLING.md §5's custom floating pill — that visual treatment (final icon set, exact spacing/shadow) remains a genuine Polish-phase task. What's built now is the *architecture* that makes a shared, cross-panel toolbar possible at all.
 
 ## Linked Canvas Panel
 

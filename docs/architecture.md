@@ -6,13 +6,13 @@ Marginal's system design and how components interact.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  React App (Next.js App Router, client-only)       │
+│  React App (Next.js App Router, client-only)        │
 ├─────────────────────────────────────────────────────┤
 │                                                     │
-│  ┌──────────────┐         ┌────────────────────┐   │
-│  │   Sidebar    │─────────│  AppContainer      │   │
-│  │              │         │  (state, routing)  │   │
-│  └──────────────┘         └────────────────────┘   │
+│  ┌──────────────┐         ┌────────────────────┐    │
+│  │   Sidebar    │─────────│  AppContainer      │    │
+│  │              │         │  (state, routing)  │    │
+│  └──────────────┘         └────────────────────┘    │
 │         ▲                           │               │
 │         │                           ▼               │
 │         │                  ┌────────────────────┐   │
@@ -105,6 +105,8 @@ Sidebar mounts
 RootLayout
 └── AppContainer (client-only, mounted after hydration)
      ├── Sidebar (notebook list, CRUD)
+     │   ├── collapsed: icon rail (new-notebook, switcher popover, expand toggle)
+     │   ├── expanded: full list (create/rename/delete) + switcher popover
      │   └── DeleteConfirmationDialog (overlay)
      └── Main surface (state-driven: notebook → contents → item)
          ├── (no notebook selected) → empty state
@@ -113,18 +115,23 @@ RootLayout
          │    │   rename/delete either — per UI navigation model)
          │    └── DeleteConfirmationDialog (overlay)
          ├── (board open) → Editor
-         │    └── tldraw instance (persistenceKey `board-${boardId}`)
+         │    └── tldraw instance (persistenceKey `board-${boardId}`,
+         │        stock tldraw UI — not affected by the PDF-panel work below)
          └── (PDF open) → PDFViewer
-              ├── page nav bar (single-page view, prev/next)
               └── PageShell (one per page, keyed by pageId)
-                   ├── PageMarkupEditor
+                   ├── unified header row (page nav left, canvas tabs right)
+                   ├── PageMarkupEditor (hideUi)
                    │    └── tldraw instance (persistenceKey `page-${pageId}`) —
-                   │        direct markup + background + spillover shapes
+                   │        direct markup + background + spillover shapes,
+                   │        camera locked to a fixed fit
                    ├── corner button (toggles right panel)
-                   └── (panel open) → RightPanel
-                        ├── tab bar (one per linked Canvas, "+" to create)
-                        └── tldraw instance for the active canvas
-                             (persistenceKey `canvas-${canvasId}`)
+                   ├── (panel open) → RightPanel (hideUi)
+                   │    └── tldraw instance for the active canvas
+                   │         (persistenceKey `canvas-${canvasId}`, free camera)
+                   └── FloatingTldrawUi — tldraw's real DefaultToolbar +
+                        DefaultStylePanel, rendered once, bound via
+                        activeEditorRef to whichever of the two tldraw
+                        instances above the pointer last entered
 ```
 
 **Note on this hierarchy:** an earlier pass scoped the tldraw `persistenceKey` directly to `notebookId`, which collapsed Notebook → Board → Canvas into Notebook → Canvas — a notebook could only ever hold one implicit canvas, not multiple named boards. This was corrected: `AppContainer` tracks an `activeItem` (`board` or `pdf`) alongside `activeNotebookId`, selecting a notebook shows `NotebookContents` (not a canvas), and only opening a specific item mounts its editor. This matches the entity hierarchy described above and in [Data Model](./data-model.md).
@@ -206,11 +213,28 @@ editor.zoomToBounds(bounds, { inset: 32, force: true }); // initial fit, matches
 - Resizing the split (dragging the divider) resizes the PDF panel's container; tldraw's internal resize handling recomputes the constrained camera automatically since the camera is defined in terms of `constraints` rather than a one-time fit — verified by dragging the divider and confirming the page re-centers/re-fits at the new width without any manual refit call.
 - The linked-canvas panel is unaffected — it keeps a normal, fully free camera, since it's a real infinite canvas, not a fixed document panel.
 
-**Shared Capsule toolbar (`app/components/Capsule.tsx`).** Both the PDF panel's `Tldraw` and the linked-canvas panel's `Tldraw` now mount with `hideUi` unconditionally — neither ever shows its own chrome. `Capsule` is the only toolbar, rendered once by `PageShell`, positioned `absolute bottom-4 left-1/2 -translate-x-1/2` relative to the split container (so it's centered over whichever panels are currently visible — just the PDF panel when closed, both combined when open — not the whole browser viewport, which would misalign it against the sidebar). Buttons: select, pen (draw), rectangle (geo), text, eraser, undo, redo — the STYLING.md §5 tool list plus undo/redo, styled minimally (dark pill, visible active state) with full visual treatment deferred to Polish.
+**Shared Capsule toolbar (`app/components/Capsule.tsx`).** *(Superseded one fix-pass later — see Fix Pass III below. Kept here for history; the file no longer exists.)* Both the PDF panel's `Tldraw` and the linked-canvas panel's `Tldraw` now mount with `hideUi` unconditionally — neither ever shows its own chrome. `Capsule` is the only toolbar, rendered once by `PageShell`, positioned `absolute bottom-4 left-1/2 -translate-x-1/2` relative to the split container (so it's centered over whichever panels are currently visible — just the PDF panel when closed, both combined when open — not the whole browser viewport, which would misalign it against the sidebar). Buttons: select, pen (draw), rectangle (geo), text, eraser, undo, redo — the STYLING.md §5 tool list plus undo/redo, styled minimally (dark pill, visible active state) with full visual treatment deferred to Polish.
 
 **Active-editor routing.** `PageShell` holds `activeEditorRef` (a `RefObject<Editor | null>`) plus an `activeEditorVersion` counter used purely to force React to re-run the Capsule's reactive subscription when the ref's target changes (a plain ref mutation doesn't trigger a re-render on its own). `activePanel: 'page' | 'canvas'` — the same state introduced in Fix Pass I — is set via `onPointerEnter` on each panel's wrapper div; an effect re-points `activeEditorRef.current` to whichever editor (`pageEditor` or `canvasEditor`) corresponds to `activePanel` and bumps the version whenever the target actually changes (including when the canvas panel remounts a new `Tldraw` instance on tab switch while the pointer is still over it). Every Capsule button reads `activeEditorRef.current` at click time — never a closed-over editor — so it always targets whichever panel the cursor last entered. The Capsule's active-tool highlight uses `useValue` from `@tldraw/state-react` with `[activeEditorRef, version]` as deps, so it both re-subscribes when the target editor changes and reactively reflects that editor's `currentToolId` changing.
 
 **This is shared groundwork, not a toolbar-only fix.** Cross-layer drawing (next milestone) needs exactly this signal — which panel the pointer is in — to know whether a drag is starting on the PDF page or in the active linked canvas, so it can route the drag's coordinates into the right space and, on crossing the panel boundary, split the stroke into its two tagged segments (see [Linked Canvases & Spillover](#linked-canvases--spillover-surface-3)). `activePanel`/`activeEditorRef` from this fix pass is that mechanism, not a new one to be built next milestone.
+
+## Surface 3 Fix Pass III — tldraw's Own UI, Collapsible Sidebar (2026-08-05)
+
+**Replacing the hand-built Capsule with tldraw's real toolbar and style panel (`app/components/FloatingTldrawUi.tsx`).** The Capsule from Fix Pass II solved "exactly one toolbar" but at the cost of real functionality — no style panel, no hand tool, arrow, sticky note, image upload, or "more tools" overflow. Rebuilding those individually wasn't worth it, so this pass renders tldraw's actual `DefaultToolbar` and `DefaultStylePanel` components instead, still shared across both panels via the same `activeEditorRef`/`activePanel` mechanism from Fix Pass II (unchanged).
+
+This works standalone (outside a full `<Tldraw>` app) because `DefaultToolbar`/`DefaultStylePanel` read the editor via React context (`useEditor()`), not by requiring the whole app wrapper — confirmed by reading tldraw's own source: `Tldraw` is just `TldrawEditor` (establishes `EditorContext`) wrapping `TldrawUi` (which is `TldrawUiContextProvider` — itself just `useMaybeEditor()`, tolerant of an externally supplied context — around the UI content). Getting an actually-working standalone extraction took three internals, not the one that seemed sufficient going in:
+
+1. **`EditorContext.Provider value={editor}`** — expected: supplies which editor via React context, re-supplied whenever `activeEditorRef`'s target changes (driven by the same `version` counter from Fix Pass II, which forces `FloatingTldrawUi` to re-render).
+2. **`ContainerProvider`** — discovered via a runtime `"useContainer used outside of <Tldraw />"` crash. `DefaultToolbar` calls `useContainer()` internally; supplied by wrapping in a ref'd div and passing that DOM node to `ContainerProvider`.
+3. **The `.tl-container`/`.tl-theme__dark` classes have to live on that *exact* ref'd element, not a child wrapper** — discovered by the "more tools" overflow menu rendering with correct layout but no theme (near-invisible icons on a white background). Radix's `DropdownMenu.Portal` (which tldraw's dropdown/popover menus use) portals into `container={useContainer()}` — the same ref'd element — not `document.body`. Since tldraw's CSS custom properties (spacing, color) are scoped to `.tl-container`/`.tl-theme__dark`, and portaled content is a *sibling* of any themed wrapper nested inside that element (not a descendant of it), the classes must sit on the container element itself for portaled menus to inherit them.
+   - This created a second conflict: `.tl-container` sets `position: relative` in tldraw.css, which loads after Tailwind's utilities in this app's bundle and wins the cascade when both are classes on the same element (equal specificity, later rule) — silently discarding the `absolute inset-0` positioning this element also needs. Fixed by setting position via an inline `style` prop instead of a Tailwind class; inline styles always win over stylesheet rules regardless of cascade order, sidestepping the conflict entirely.
+
+None of this amounts to "a hard dependency on the full `<Tldraw>` app" — the fallback path in the task that authorized this work (stop and report back if that turned out to be true) wasn't needed. It's three contexts/CSS scopes to satisfy instead of one, all discoverable from tldraw's own source and runtime errors, not from guesswork.
+
+**Header symmetry (re-verified, not changed).** The task that authorized this pass described the PDF page nav as "centered across the full window" instead of within its own panel. Reading `PageShell`'s header markup (`app/components/PDFViewer.tsx`) and measuring live in the browser (nav content's bounding-box center vs. its containing section's bounding-box center) both showed they already match exactly, independent of window width — the per-panel centering built in Fix Pass II already satisfies this. No code changed here; documented in case this surfaces again, so the next pass doesn't have to re-derive the same conclusion.
+
+**Collapsible sidebar (`app/components/Sidebar.tsx`).** Two modes now: expanded (unchanged 256px full list) and collapsed (48px icon rail: expand-toggle, new-notebook, notebook-switcher). The switcher is a floating popover listing every notebook by name; available in both modes (not just collapsed), closes on outside click, `Escape`, or selection. Preference persists to `localStorage` (`marginal:sidebarCollapsed`) — same pure-UI-state pattern as the resizable split (Fix Pass I) and this pass's own toolbar work, not routed through `src/storage/db.ts`. Rationale: Surface 3 already puts two panels on screen before the sidebar is counted; an always-expanded sidebar competes directly with that on laptop/tablet-sized viewports.
 
 ## Storage Architecture
 
