@@ -1,0 +1,240 @@
+# Data Model
+
+Complete schema and entity relationships.
+
+## Entity Relationships
+
+```
+Notebook (flat container)
+  ├── Board (infinite canvas, standalone)
+  └── PDFDocument
+       └── Page (one per PDF page)
+            ├── Direct markup (strokes on page itself)
+            └── Canvas[] (linked side-canvases, 0 to many)
+                 └── activeCanvasId (only one active per page)
+```
+
+## Entities
+
+### Notebook
+
+Top-level organizational unit. Flat (no nesting).
+
+```typescript
+interface Notebook {
+  id: string;                // Unique identifier
+  name: string;              // Display name (editable)
+  order: number;             // Sort order in sidebar
+  createdAt: number;         // Unix timestamp (ms)
+  updatedAt: number;         // Last modification time
+}
+```
+
+**Invariants:**
+- Every notebook has a unique ID
+- Name can be empty string (though UI should prevent this)
+- Order is user-controlled (sidebar drag-to-reorder, future feature)
+
+**Lifecycle:**
+- Create: `createNotebook(name)` → returns Notebook
+- Read: `getNotebook(id)` or `getNotebooksList()` → all notebooks ordered by order field
+- Update: `updateNotebook(id, updates)` → patch fields, auto-updates `updatedAt`
+- Delete: `deleteNotebook(id)` → cascades to all Boards and PDFDocuments
+
+### Board
+
+Infinite canvas attached to a notebook. No PDF.
+
+```typescript
+interface Board {
+  id: string;                // Unique identifier
+  notebookId: string;        // Parent notebook
+  name: string;              // Display name (editable)
+  order: number;             // Sort order within notebook
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+**Invariants:**
+- Every board belongs to exactly one notebook
+- Order field allows future reordering within notebook
+
+**Lifecycle:**
+- Create: `createBoard(notebookId, name)` → new board, next order value
+- Read: `getBoard(id)` or `getBoardsByNotebook(notebookId)` → ordered by order
+- Update: `updateBoard(id, updates)` → rename, change order
+- Delete: `deleteBoard(id)` → removes board (no cascade; tldraw data separately managed)
+
+**Content storage:**
+- Strokes, shapes, text: Managed by tldraw, persisted separately (not in Dexie in v1)
+
+### PDFDocument
+
+PDF file attached to a notebook. Contains pages.
+
+```typescript
+interface PDFDocument {
+  id: string;                // Unique identifier
+  notebookId: string;        // Parent notebook
+  name: string;              // Display name (editable)
+  fileName: string;          // Original file name (for download/export)
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+**Invariants:**
+- Every PDF belongs to exactly one notebook
+- fileName preserved for export/reference (not currently used)
+
+**Lifecycle:**
+- Create: `createPDFDocument(notebookId, name, fileName)` → new PDF, initially no pages
+- Read: `getPDFDocument(id)` or `getPDFsByNotebook(notebookId)`
+- Update: `updatePDFDocument(id, updates)` → rename
+- Delete: `deletePDFDocument(id)` → cascades to all Pages and Canvases
+
+**Content storage:**
+- PDF file: Stored separately (blob/file storage TBD in PDF import phase)
+- Page images: Rendered on-demand via PDF.js
+
+### Page
+
+One page from a PDF. Fixed dimensions matching source page.
+
+```typescript
+interface Page {
+  id: string;                // Unique identifier
+  pdfDocumentId: string;     // Parent PDF
+  pageNumber: number;        // 0-indexed page number
+  width: number;             // Page width in PDF units (e.g., 612 for US Letter)
+  height: number;            // Page height in PDF units (e.g., 792)
+  activeCanvasId: string | null; // Which canvas's spillover is visible
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+**Invariants:**
+- Every page belongs to exactly one PDF
+- Width/height are immutable (from source PDF)
+- activeCanvasId always points to an existing Canvas (never null; Canvas 0 auto-created)
+- pageNumber is immutable
+
+**Lifecycle:**
+- Create: `createPage(pdfDocumentId, pageNumber, width, height)` → auto-creates Canvas 0 as active
+- Read: `getPage(id)` or `getPagesByPDF(pdfDocumentId)` → ordered by pageNumber
+- Update: `updatePage(id, updates)` → only updates activeCanvasId (to switch which canvas's spillover shows)
+- Delete: `deletePage(id)` → cascades to all Canvases
+
+**Content storage:**
+- Direct markup: Strokes on page itself (separate storage, not in entity)
+- Spillover from active canvas: Rendered on-top (not stored on page; computed from Canvas)
+
+### Canvas
+
+Linked side-canvas attached to a page. Independent coordinate space.
+
+```typescript
+interface Canvas {
+  id: string;                // Unique identifier
+  pageId: string;            // Parent page
+  name: string;              // Display name (e.g., "Canvas 1")
+  order: number;             // Tab order on right panel
+  isActive: boolean;         // Only one per page is true
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+**Invariants:**
+- Every canvas belongs to exactly one page
+- Exactly one canvas per page has `isActive: true` (enforced by switching logic)
+- order field allows reordering tabs
+
+**Lifecycle:**
+- Create: `createCanvas(pageId, name)` → new canvas, next order value, isActive = (isFirstCanvas)
+- Read: `getCanvas(id)` or `getCanvasesByPage(pageId)` → ordered by order
+- Update: `updateCanvas(id, updates)` → rename, change order, change isActive
+- Delete: `deleteCanvas(id)` → removes canvas; if it was active, make next canvas active
+
+**Content storage:**
+- Strokes, shapes, text: Managed by tldraw, persisted separately
+
+**Spillover behavior:**
+- Only the active canvas's strokes that cross into the PDF page boundary render on the page
+- Switching active canvas swaps visible spillover (real-time, no load delay)
+
+## Cross-Layer Strokes (Future)
+
+When a stroke spans both PDF page and linked canvas (cross-layer drawing):
+
+```typescript
+interface CrossLayerStroke {
+  strokeGroupId: string;     // Shared ID for linked segments
+  pdfSegment: Stroke;        // Half on PDF page
+  canvasSegment: Stroke;     // Half on canvas
+}
+```
+
+**Storage rule:** Store as two separate strokes in their respective coordinate spaces, linked by `strokeGroupId`. This allows each half to render independently and transform independently if pan/zoom changes.
+
+**Known limitation:** If one panel is panned/zoomed after a cross-layer stroke is drawn, the halves can visually separate (different coordinate transforms). This is accepted; not a bug to fix silently.
+
+## Indexing & Queries
+
+Dexie indexes for efficient queries:
+
+| Table | Primary Key | Indexes | Purpose |
+|-------|-------------|---------|---------|
+| notebooks | id | order, createdAt | List all, sort by order |
+| boards | id | notebookId, order, createdAt | Get boards in notebook |
+| pdfDocuments | id | notebookId, createdAt | Get PDFs in notebook |
+| pages | id | pdfDocumentId, pageNumber, createdAt | Get pages in PDF |
+| canvases | id | pageId, order, createdAt | Get canvases for page |
+
+## Storage Layer
+
+All data access is through functions in `src/storage/db.ts`. Components never access tables directly.
+
+**Example flow:**
+```typescript
+// Component code
+const notebooks = await getNotebooksList();  // Pure function call
+
+// db.ts implementation
+export async function getNotebooksList(): Promise<Notebook[]> {
+  return db.notebooks.orderBy("order").toArray();
+}
+```
+
+**Benefits:**
+- Easy to swap Dexie for a backend sync layer later
+- Type-safe (TypeScript interfaces)
+- Consistent error handling
+- Single source of truth for query logic
+
+## Migrations & Schema Evolution (Future)
+
+As the project evolves, schema changes must:
+
+1. Add new Dexie version in `db.ts` constructor
+2. Write migration function to transform old data to new schema
+3. Update `src/storage/types.ts` interfaces
+4. Update this doc (data-model.md) in the same commit
+5. Note breaking changes in commit message
+
+Example (hypothetical):
+```typescript
+this.version(2).stores({ /* new schema */ }).upgrade(async (tx) => {
+  // Transform v1 to v2 data
+});
+```
+
+## Future Extensibility
+
+Fields reserved for future use (do not remove):
+- `Page.metadata` (future: OCR results, page labels, etc.)
+- `Canvas.config` (future: per-canvas preferences)
+
+Do not add fields speculatively. Update schema only when a feature actually needs them.
