@@ -80,9 +80,12 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
 
     try {
       await deleteNotebook(deleteConfirmationId);
-      setNotebooks(notebooks.filter((nb) => nb.id !== deleteConfirmationId));
+      const updatedNotebooks = notebooks.filter((nb) => nb.id !== deleteConfirmationId);
+      setNotebooks(updatedNotebooks);
+
+      // If deleted notebook was active, select next one (or none if list is empty)
       if (activeNotebookId === deleteConfirmationId) {
-        onSelectNotebook?.(notebooks[0]?.id || null);
+        onSelectNotebook?.(updatedNotebooks[0]?.id || null);
       }
     } catch (error) {
       console.error("Failed to delete notebook:", error);
