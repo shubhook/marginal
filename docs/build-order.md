@@ -89,22 +89,27 @@ The coordinate-transform system underpins every later surface. If the math is wr
 
 **Next:** Surface 3 (linked side-canvases) — the corner button, right panel, canvas tabs, and spillover. Cross-layer drawing then has both of its prerequisites in place.
 
-### 4. Surface 3: Linked Side-Canvases
+### 4. Surface 3: Linked Side-Canvases ✅ (Complete — 2026-08-04)
 
 **Purpose:** Per-page canvas tabs for expanded notes outside the PDF margin.
 
 **Deliverables:**
-- Right panel (slides in/out via corner button, contains canvas tabs)
-- Tab UI (canvas name/number, active state marked with accent underline)
-- "+" tab to create new canvas per page
-- Canvas CRUD (delete, rename)
-- Each canvas is an independent tldraw instance with own coordinate space
-- Active canvas state persists per page (stored in Page.activeCanvasId)
-- Switching tabs swaps visible spillover strokes on PDF page
-- No loading delay (local operation, instant tab switch)
+- Right panel (slides in/out via corner button, contains canvas tabs) ✅
+- Tab UI (canvas name/number, active state marked with accent underline) ✅
+- "+" tab to create new canvas per page ✅
+- Canvas CRUD (delete, rename) ✅
+- Each canvas is an independent tldraw instance with own coordinate space ✅
+- Active canvas state persists per page (stored in Page.activeCanvasId) ✅
+- Switching tabs swaps visible spillover strokes on PDF page ✅
+- No loading delay (local operation, instant tab switch) ✅
+
+**Explicitly not built this milestone (per scope):** real cross-layer drawing (a stroke dragged continuously from the PDF page into the panel). Spillover *rendering* (showing/hiding the active canvas's PDF-side marks) is built and verified; spillover *creation* via an actual cross-boundary drag is the next milestone. A temporary test affordance (`app/components/spillover.ts` → `addTestSpillover`, exposed as the "⊕ spill" button in the right panel) creates tagged marker shapes so the rendering rule could be verified without it.
+
+**Design decision (see [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3) for full rationale):** spillover shapes live inside the page's own tldraw store, tagged with `meta.canvasId`, rather than in separate per-canvas page-stores. This keeps tab switching instant (no remount of the page/background), keeps direct markup and the background singular (no duplication across per-canvas copies), and composes directly with cross-layer drawing next — a split stroke's PDF-side segment is just another tagged shape in the same store.
 
 **Data model changes:**
-- None (Canvas entity and activeCanvasId already in schema)
+- None to the schema (`Canvas` and `Page.activeCanvasId` already existed) — added data-layer functions: `createCanvasAndActivate`, `setActiveCanvas` (keeps `Canvas.isActive` in sync with `Page.activeCanvasId`), and a `deleteCanvas` rewrite that refuses to delete a page's last canvas and reassigns the active canvas when needed. See [Data Model § Canvas](./data-model.md#canvas).
+- `deleteNotebook`/`deletePDFDocument`/`deletePage` extended to also collect and delete `canvas-${id}` tldraw stores (previously only `board-${id}`/`page-${id}` were cleaned up, since no UI created canvas stores before this milestone).
 
 **Acceptance Criteria:**
 - ✓ Create a PDF page, it auto-has Canvas 0
@@ -116,16 +121,22 @@ The coordinate-transform system underpins every later surface. If the math is wr
 - ✓ Draw in a canvas, reload page, strokes persist
 - ✓ Surfaces 1 and 2 still work (spot check)
 
+**Verification (2026-08-04):** via browser automation — created 3 linked canvases on one PDF page, drew a distinct stroke and panned each independently, confirmed full isolation (switching tabs showed each canvas's own content and camera position, untouched by the others). Added a distinguishable test-spillover mark per canvas at the same page anchor point and confirmed switching tabs showed exactly one at a time, never more than one simultaneously. Reloaded the page and confirmed all 3 canvases, the active tab, and the currently-visible spillover mark all persisted correctly. Deleted the PDFDocument and confirmed via direct IndexedDB inspection that all canvases and their tldraw stores (`canvas-*`) were removed alongside the pages, with zero orphans. Regression-checked Surface 1 (board create, draw, reload) — still works.
+
+**Known issue found and fixed along the way:** the corner button was initially invisible — tldraw's own style panel renders at `z-index: 300`, silently covering an overlay button with a lower z-index. Fixed by giving the button `z-[400]`.
+
 ### 5. Cross-Layer Drawing
 
 **Purpose:** Draw continuously across PDF page ↔ linked canvas boundary.
+
+**Depends on:** the spillover-per-canvas rendering mechanism built in Surface 3 (tagged shapes in the page's tldraw store, visibility keyed to `activeCanvasId`) — this milestone is about *creating* those tagged shapes by splitting a real cross-boundary stroke, not inventing a new storage mechanism.
 
 **Deliverables:**
 - Transparent screen-space overlay capturing drags across panel boundary
 - Mid-drag stroke rendering (stroke spans both surfaces in real time while drawing)
 - Stroke splitting at panel boundary after completion
-- Storage: two linked segments per cross-boundary stroke (shared strokeGroupId)
-- Spillover rendering rule enforced (only active canvas spillover visible)
+- Storage: two linked segments per cross-boundary stroke (shared strokeGroupId) — PDF-side segment as a `meta.canvasId`-tagged shape in the page's store (same mechanism as the Surface 3 test affordance), canvas-side segment in that canvas's own store
+- Spillover rendering rule already enforced by Surface 3 (only active canvas spillover visible) — this milestone only needs to create correctly-tagged shapes, not rebuild visibility
 - Known limitation: if either panel is panned/zoomed after a cross-boundary stroke, halves can separate (documented, not a bug to fix silently)
 
 **Data model changes:**

@@ -232,9 +232,13 @@ All 12 tests should pass before any UI touches the coordinate system.
 - Safe to call on every mouse move or frame
 - No caching needed; transforms are small objects
 
-## Future: Multiple Canvas Spaces
+## Multiple Canvas Spaces (Surface 3)
 
-When Surface 3 (linked canvases) is built, **each canvas has its own transform**. The coordinate system supports this:
+Surface 3 (linked canvases, 2026-08-04) confirmed each canvas has its own transform, exactly as anticipated below — each linked Canvas is a fully independent tldraw instance (own pan/zoom, own persistenceKey `canvas-${canvasId}`).
+
+What Surface 3 did **not** need, and what turned out to still be superseded by the Surface 2 approach: the functions in this file. PDF-side spillover (which of a page's linked canvases' PDF-side markup is currently visible) is implemented as tagged shapes living directly inside the *page's* own tldraw store — see [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3) — so page space and tldraw space stay identical by construction, the same way direct markup does. No `pdfToWorld`/`worldToPdf` calls were added.
+
+The first feature expected to actually need a transform between a Canvas's world space and the Page's PDF space is cross-layer drawing (next milestone): a single in-progress stroke that starts on the page and continues into a linked canvas's panel will need to convert the drag's screen coordinates into both spaces as it crosses the boundary, then store the two halves in their respective coordinate spaces (see [Data Model § Cross-Layer Strokes](./data-model.md#cross-layer-strokes-future)).
 
 ```typescript
 // Board transform

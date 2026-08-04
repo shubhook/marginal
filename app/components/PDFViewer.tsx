@@ -11,9 +11,19 @@ import {
   type TLShapeId,
 } from "tldraw";
 import "tldraw/tldraw.css";
-import type { Page } from "@/src/storage/types";
-import { getPagesByPDF } from "@/src/storage/db";
+import type { Canvas, Page } from "@/src/storage/types";
+import {
+  createCanvasAndActivate,
+  deleteCanvas,
+  getCanvasesByPage,
+  getPage,
+  getPagesByPDF,
+  setActiveCanvas,
+  updateCanvas,
+} from "@/src/storage/db";
 import { renderPageBitmap } from "@/src/pdf/renderer";
+import { addTestSpillover, applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
+import { RightPanel } from "./RightPanel";
 
 interface PDFViewerProps {
   pdfDocumentId: string;
@@ -84,10 +94,128 @@ export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
         </button>
       </div>
 
-      {/* key forces a fresh tldraw instance per page — each page is its own store */}
-      <div className="flex-1">
-        <PageMarkupEditor key={page.id} page={page} pdfDocumentId={pdfDocumentId} />
+      {/* key forces a fresh page shell per page — each page is its own store,
+          with its own set of linked canvases */}
+      <PageShell key={page.id} page={page} pdfDocumentId={pdfDocumentId} />
+    </div>
+  );
+}
+
+interface PageShellProps {
+  page: Page;
+  pdfDocumentId: string;
+}
+
+// Owns everything scoped to a single page: the direct-markup tldraw
+// instance, the corner button, the linked-canvas right panel, and which
+// canvas is currently active (source of truth: Page.activeCanvasId).
+function PageShell({ page, pdfDocumentId }: PageShellProps) {
+  const [pageEditor, setPageEditor] = useState<Editor | null>(null);
+  const [canvases, setCanvases] = useState<Canvas[]>([]);
+  const [activeCanvasId, setActiveCanvasIdState] = useState<string | null>(page.activeCanvasId);
+  const [panelOpen, setPanelOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCanvasesByPage(page.id)
+      .then((loaded) => {
+        if (!cancelled) setCanvases(loaded);
+      })
+      .catch((error) => console.error("Failed to load canvases:", error));
+    return () => {
+      cancelled = true;
+    };
+  }, [page.id]);
+
+  // Keep the page's markup layer showing only the active canvas's spillover,
+  // whenever either the editor becomes available or the active canvas changes.
+  useEffect(() => {
+    if (!pageEditor) return;
+    applySpilloverVisibility(pageEditor, activeCanvasId);
+  }, [pageEditor, activeCanvasId]);
+
+  const handleActivate = async (canvasId: string) => {
+    setActiveCanvasIdState(canvasId);
+    try {
+      await setActiveCanvas(page.id, canvasId);
+    } catch (error) {
+      console.error("Failed to set active canvas:", error);
+    }
+  };
+
+  const handleCreate = async () => {
+    try {
+      const canvas = await createCanvasAndActivate(page.id, `Canvas ${canvases.length}`);
+      setCanvases((cs) => [...cs, canvas]);
+      setActiveCanvasIdState(canvas.id);
+    } catch (error) {
+      console.error("Failed to create canvas:", error);
+    }
+  };
+
+  const handleRename = async (id: string, name: string) => {
+    try {
+      await updateCanvas(id, { name });
+      setCanvases((cs) => cs.map((c) => (c.id === id ? { ...c, name } : c)));
+    } catch (error) {
+      console.error("Failed to rename canvas:", error);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (canvases.length <= 1) return; // last canvas on a page can't be removed
+    try {
+      if (pageEditor) removeSpilloverForCanvas(pageEditor, id);
+      await deleteCanvas(id);
+      const [refreshedCanvases, refreshedPage] = await Promise.all([
+        getCanvasesByPage(page.id),
+        getPage(page.id),
+      ]);
+      setCanvases(refreshedCanvases);
+      setActiveCanvasIdState(refreshedPage?.activeCanvasId ?? refreshedCanvases[0]?.id ?? null);
+    } catch (error) {
+      console.error("Failed to delete canvas:", error);
+    }
+  };
+
+  const handleAddTestSpillover = () => {
+    if (!pageEditor || !activeCanvasId) return;
+    const index = canvases.findIndex((c) => c.id === activeCanvasId);
+    const canvas = canvases[index];
+    if (!canvas) return;
+    addTestSpillover(pageEditor, activeCanvasId, canvas.name, index);
+  };
+
+  return (
+    <div className="flex-1 flex overflow-hidden">
+      <div className="relative flex-1">
+        <PageMarkupEditor
+          page={page}
+          pdfDocumentId={pdfDocumentId}
+          onEditorMount={setPageEditor}
+        />
+        <button
+          onClick={() => setPanelOpen((open) => !open)}
+          // tldraw's own UI (style panel, menus) uses z-index up to 300 — this
+          // has to sit above it to stay clickable regardless of tool state.
+          className="absolute top-3 right-3 z-[400] w-7 h-7 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1c1c1e] text-[#8a8a8a] hover:text-[#f0f0f0] hover:bg-[#242424] text-xs shadow-md"
+          title="Linked canvases"
+        >
+          ⧉
+        </button>
       </div>
+      {panelOpen && (
+        <RightPanel
+          canvases={canvases}
+          activeCanvasId={activeCanvasId}
+          onActivate={handleActivate}
+          onCreate={handleCreate}
+          onRename={handleRename}
+          onDelete={handleDelete}
+          onClose={() => setPanelOpen(false)}
+          onAddTestSpillover={handleAddTestSpillover}
+        />
+      )}
     </div>
   );
 }
@@ -95,6 +223,7 @@ export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
 interface PageMarkupEditorProps {
   page: Page;
   pdfDocumentId: string;
+  onEditorMount: (editor: Editor) => void;
 }
 
 // One tldraw instance per Page, persisted under `page-${pageId}`.
@@ -105,12 +234,16 @@ interface PageMarkupEditorProps {
 // (x, y) is at PDF point (x, y) — and the tldraw camera plays the role of the
 // Transform from src/canvas/coordinates.ts. Pan/zoom moves page and markup
 // together, so markup can never drift relative to the page.
-function PageMarkupEditor({ page, pdfDocumentId }: PageMarkupEditorProps) {
+//
+// Spillover shapes (Surface 3) also live in this same store, tagged with
+// `meta.canvasId` — see app/components/spillover.ts.
+function PageMarkupEditor({ page, pdfDocumentId, onEditorMount }: PageMarkupEditorProps) {
   const handleMount = (editor: Editor) => {
     // Frame the page immediately — dimensions are known from the Page row.
     editor.zoomToBounds(new Box(0, 0, page.width, page.height), {
       inset: 32,
     });
+    onEditorMount(editor);
     void ensurePageBackground(editor, page, pdfDocumentId);
   };
 

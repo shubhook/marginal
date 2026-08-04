@@ -116,8 +116,15 @@ RootLayout
          │    └── tldraw instance (persistenceKey `board-${boardId}`)
          └── (PDF open) → PDFViewer
               ├── page nav bar (single-page view, prev/next)
-              └── PageMarkupEditor (one per page, keyed by pageId)
-                   └── tldraw instance (persistenceKey `page-${pageId}`)
+              └── PageShell (one per page, keyed by pageId)
+                   ├── PageMarkupEditor
+                   │    └── tldraw instance (persistenceKey `page-${pageId}`) —
+                   │        direct markup + background + spillover shapes
+                   ├── corner button (toggles right panel)
+                   └── (panel open) → RightPanel
+                        ├── tab bar (one per linked Canvas, "+" to create)
+                        └── tldraw instance for the active canvas
+                             (persistenceKey `canvas-${canvasId}`)
 ```
 
 **Note on this hierarchy:** an earlier pass scoped the tldraw `persistenceKey` directly to `notebookId`, which collapsed Notebook → Board → Canvas into Notebook → Canvas — a notebook could only ever hold one implicit canvas, not multiple named boards. This was corrected: `AppContainer` tracks an `activeItem` (`board` or `pdf`) alongside `activeNotebookId`, selecting a notebook shows `NotebookContents` (not a canvas), and only opening a specific item mounts its editor. This matches the entity hierarchy described above and in [Data Model](./data-model.md).
@@ -130,6 +137,33 @@ RootLayout
 - **Rendering pipeline:** `src/pdf/pdfjs.ts` loads PDF.js lazily via dynamic import (PDF.js touches browser globals at module scope, so a static import would break Next's SSR pass even in client components). `src/pdf/renderer.ts` caches the parsed document per PDFDocument and the rendered bitmap per Page (2× oversampled PNG with the 1px `border-subtle` page outline baked in).
 - **Coordinate model:** the rendered page bitmap is inserted **inside** the page's tldraw instance as a locked image shape at (0,0) sized to the page's native PDF-point dimensions. PDF-page space and tldraw page space are therefore **identical by construction** — a stroke at tldraw (x, y) is at PDF point (x, y), and the tldraw camera plays the role of the `Transform` from `src/canvas/coordinates.ts` (`pdfToWorld`/`worldToPdf` with the identity page placement). Pan/zoom moves page and markup together, so markup can never drift relative to the page, and no new coordinate math exists anywhere in the PDF path.
 - **Bitmap persistence:** the background image shape (deterministic id `pdfbg-${pageId}`) and its asset persist in the page's tldraw store, so a page is re-rendered by PDF.js only if its store doesn't already contain the background (first open), not on every visit.
+
+## Linked Canvases & Spillover (Surface 3)
+
+**Decided implementation (2026-08-04):**
+
+Surface 2 made a Page's direct-markup layer and its tldraw coordinate space identical by embedding the PDF bitmap directly into the page's own tldraw store — that worked because a Page had exactly one markup layer. Surface 3 adds multiple linked Canvases per Page, and per [Data Model](./data-model.md#canvas), only the *active* canvas's PDF-side "spillover" should render on the page at once.
+
+Two approaches were considered:
+
+- **(a) One tldraw store per page, strokes tagged with `canvasId`, visibility toggled by filtering which shapes render based on `activeCanvasId`.**
+- (b) Separate page-level tldraw stores per canvas, swapped in/out as the active canvas changes.
+
+**Chosen: (a).** Reasons:
+
+- (b) would force a full remount of the page's tldraw instance (including re-verifying/recreating the background bitmap) on every tab switch — directly conflicting with the "switching tabs must feel instant, no loading state" requirement (ui-interaction.md §5).
+- (b) would also require the page background image and any direct markup to be duplicated into every per-canvas "page copy," risking drift between copies. Under (a) there is exactly one page store, so direct markup and the background can never be out of sync with themselves.
+- (a) composes naturally with cross-layer drawing (next milestone): when a stroke is split at the panel boundary, the PDF-side segment is just another page-store shape tagged with `canvasId` and the shared `strokeGroupId`. No architecture change is needed to go from "spillover visibility" (this milestone) to "spillover creation via real cross-layer strokes" (next milestone).
+- Deleting a canvas or its whole page already deletes the correct data: canvas-tagged shapes live inside `page-${pageId}`'s own tldraw store, so deleting the page (or the PDF, or the notebook) removes them automatically as part of the existing tldraw-store cascade — no separate spillover cleanup path was needed for those cases. Deleting a single (non-last) canvas does need an explicit sweep of its tagged shapes from the page store, which `handleDeleteCanvas` performs (see `app/components/spillover.ts` → `removeSpilloverForCanvas`).
+
+**Coordinate transforms:** `pdfToWorld`/`worldToPdf` from `src/canvas/coordinates.ts` are **not** used for spillover, for the same reason Surface 2 didn't need them for direct markup — the spillover shapes live in the page's own tldraw store at PDF-page coordinates by construction (approach (a)), so page space and tldraw space are already identical. Each linked **Canvas**, however, *is* a genuinely separate coordinate space (own pan/zoom, own tldraw store `canvas-${canvasId}`) — see [Coordinates § Multiple Canvas Spaces](./coordinates.md#future-multiple-canvas-spaces). Cross-layer drawing (next milestone) will be the first feature that actually needs a transform between a Canvas's world space and the Page's PDF space, since that's when a single in-progress stroke will span both.
+
+**Implementation:**
+
+- `app/components/spillover.ts` — `applySpilloverVisibility(editor, activeCanvasId)` sets `opacity`/`isLocked` on every shape with `meta.canvasId` set, showing only the active canvas's; untagged shapes (direct markup, the background image) are never touched. `addTestSpillover` is a **temporary test affordance** for this milestone only — it creates a tagged marker shape so the visibility rule can be exercised before real cross-layer drawing exists to create tagged shapes organically. `removeSpilloverForCanvas` sweeps a deleted canvas's tagged shapes out of the page store.
+- `app/components/PDFViewer.tsx` — `PageShell` owns `activeCanvasId` (mirrors `Page.activeCanvasId`, the source of truth) and the mounted page `Editor` instance, and re-runs `applySpilloverVisibility` whenever either changes.
+- `app/components/RightPanel.tsx` — tab bar (one per linked Canvas, plus "+") with the *active* canvas's own tldraw instance mounted below it, keyed by canvas id (`persistenceKey` `canvas-${canvasId}`) so switching tabs is a local remount, not a network operation.
+- Corner button (`PDFViewer.tsx`) toggles the panel; it's rendered with `z-[400]` because tldraw's own style panel uses up to `z-index: 300` and would otherwise sit on top of it.
 
 ## Storage Architecture
 

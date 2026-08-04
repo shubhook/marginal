@@ -86,6 +86,10 @@ export async function deleteNotebook(id: string): Promise<void> {
   const pages = pdfIds.length
     ? await db.pages.where("pdfDocumentId").anyOf(pdfIds).toArray()
     : [];
+  const pageIds = pages.map((p) => p.id);
+  const canvases = pageIds.length
+    ? await db.canvases.where("pageId").anyOf(pageIds).toArray()
+    : [];
 
   await db.transaction(
     "rw",
@@ -94,8 +98,10 @@ export async function deleteNotebook(id: string): Promise<void> {
       for (const board of boards) {
         await db.boards.delete(board.id);
       }
+      for (const canvas of canvases) {
+        await db.canvases.delete(canvas.id);
+      }
       for (const page of pages) {
-        await db.canvases.where("pageId").equals(page.id).delete();
         await db.pages.delete(page.id);
       }
       for (const pdfId of pdfIds) {
@@ -111,6 +117,9 @@ export async function deleteNotebook(id: string): Promise<void> {
   }
   for (const page of pages) {
     await deleteTldrawData(`page-${page.id}`);
+  }
+  for (const canvas of canvases) {
+    await deleteTldrawData(`canvas-${canvas.id}`);
   }
 }
 
@@ -198,13 +207,16 @@ export async function updatePDFDocument(
 
 export async function deletePDFDocument(id: string): Promise<void> {
   const pages = await db.pages.where("pdfDocumentId").equals(id).toArray();
+  const pageIds = pages.map((p) => p.id);
+  const canvases = pageIds.length
+    ? await db.canvases.where("pageId").anyOf(pageIds).toArray()
+    : [];
 
   await db.transaction("rw", db.pdfDocuments, db.pdfFiles, db.pages, db.canvases, async () => {
+    for (const canvas of canvases) {
+      await db.canvases.delete(canvas.id);
+    }
     for (const page of pages) {
-      const canvases = await db.canvases.where("pageId").equals(page.id).toArray();
-      for (const canvas of canvases) {
-        await db.canvases.delete(canvas.id);
-      }
       await db.pages.delete(page.id);
     }
     await db.pdfFiles.delete(id);
@@ -214,6 +226,9 @@ export async function deletePDFDocument(id: string): Promise<void> {
   // Markup stores live outside Dexie, so clean them after the transaction.
   for (const page of pages) {
     await deleteTldrawData(`page-${page.id}`);
+  }
+  for (const canvas of canvases) {
+    await deleteTldrawData(`canvas-${canvas.id}`);
   }
 }
 
@@ -237,7 +252,7 @@ export async function createPage(
   const id = `pg_${now}_${Math.random().toString(36).substring(2, 9)}`;
 
   // Auto-create Canvas 0 as the active canvas
-  const canvasId = await createCanvas(id, `Canvas 0`);
+  const canvas = await createCanvas(id, `Canvas 0`);
 
   const page: Page = {
     id,
@@ -245,7 +260,7 @@ export async function createPage(
     pageNumber,
     width,
     height,
-    activeCanvasId: canvasId,
+    activeCanvasId: canvas.id,
     createdAt: now,
     updatedAt: now,
   };
@@ -273,23 +288,24 @@ export async function updatePage(
 }
 
 export async function deletePage(id: string): Promise<void> {
+  const canvases = await db.canvases.where("pageId").equals(id).toArray();
+
   await db.transaction("rw", db.pages, db.canvases, async () => {
-    // Delete all canvases for this page
-    const canvases = await db.canvases.where("pageId").equals(id).toArray();
     for (const canvas of canvases) {
       await db.canvases.delete(canvas.id);
     }
-
-    // Delete the page itself
     await db.pages.delete(id);
   });
 
-  // Markup store lives outside Dexie, so clean it after the transaction.
+  // Markup stores live outside Dexie, so clean them after the transaction.
   await deleteTldrawData(`page-${id}`);
+  for (const canvas of canvases) {
+    await deleteTldrawData(`canvas-${canvas.id}`);
+  }
 }
 
 // Canvas operations
-export async function createCanvas(pageId: string, name: string): Promise<string> {
+export async function createCanvas(pageId: string, name: string): Promise<Canvas> {
   const order = (await db.canvases.where("pageId").equals(pageId).count()) + 1;
   const now = Date.now();
   const id = `cv_${now}_${Math.random().toString(36).substring(2, 9)}`;
@@ -305,7 +321,15 @@ export async function createCanvas(pageId: string, name: string): Promise<string
   };
 
   await db.canvases.add(canvas);
-  return id;
+  return canvas;
+}
+
+// Creates a new canvas and immediately makes it the page's active canvas —
+// "+" tab auto-focuses per ui-interaction.md §5.
+export async function createCanvasAndActivate(pageId: string, name: string): Promise<Canvas> {
+  const canvas = await createCanvas(pageId, name);
+  await setActiveCanvas(pageId, canvas.id);
+  return canvas;
 }
 
 export async function getCanvas(id: string): Promise<Canvas | undefined> {
@@ -326,6 +350,53 @@ export async function updateCanvas(
   });
 }
 
+// Page.activeCanvasId is the source of truth for which canvas's spillover is
+// visible; Canvas.isActive is kept in sync alongside it for consistency.
+export async function setActiveCanvas(pageId: string, canvasId: string): Promise<void> {
+  const siblings = await db.canvases.where("pageId").equals(pageId).toArray();
+  const now = Date.now();
+
+  await db.transaction("rw", db.pages, db.canvases, async () => {
+    for (const canvas of siblings) {
+      const shouldBeActive = canvas.id === canvasId;
+      if (canvas.isActive !== shouldBeActive) {
+        await db.canvases.update(canvas.id, { isActive: shouldBeActive, updatedAt: now });
+      }
+    }
+    await db.pages.update(pageId, { activeCanvasId: canvasId, updatedAt: now });
+  });
+}
+
+// A page must always have at least one canvas (never a null activeCanvasId
+// per data-model.md), so the last remaining canvas can't be deleted. If the
+// deleted canvas was active, the next-lowest-order sibling becomes active.
 export async function deleteCanvas(id: string): Promise<void> {
-  await db.canvases.delete(id);
+  const canvas = await db.canvases.get(id);
+  if (!canvas) return;
+
+  const siblings = await db.canvases.where("pageId").equals(canvas.pageId).sortBy("order");
+  if (siblings.length <= 1) {
+    throw new Error("Cannot delete the last remaining canvas on a page");
+  }
+
+  const page = await db.pages.get(canvas.pageId);
+  const wasActive = page?.activeCanvasId === id;
+  const remaining = siblings.filter((c) => c.id !== id);
+  const nextActiveId = wasActive ? remaining[0].id : (page?.activeCanvasId ?? remaining[0].id);
+  const now = Date.now();
+
+  await db.transaction("rw", db.canvases, db.pages, async () => {
+    await db.canvases.delete(id);
+    if (wasActive) {
+      for (const sibling of remaining) {
+        await db.canvases.update(sibling.id, {
+          isActive: sibling.id === nextActiveId,
+          updatedAt: now,
+        });
+      }
+      await db.pages.update(canvas.pageId, { activeCanvasId: nextActiveId, updatedAt: now });
+    }
+  });
+
+  await deleteTldrawData(`canvas-${id}`);
 }

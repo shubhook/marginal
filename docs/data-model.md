@@ -149,9 +149,9 @@ interface Page {
 
 **Content storage:**
 - Direct markup: strokes live in the page's own tldraw store (persistenceKey `page-${pageId}`), in PDF-page coordinates — see [Architecture § PDF Rendering](./architecture.md#pdf-rendering--direct-markup-surface-2). Deleted along with the page (`deletePage`/cascades remove the tldraw store too).
-- Spillover from active canvas: Rendered on-top (not stored on page; computed from Canvas)
+- Spillover from the active canvas: also lives in this same store, tagged with `meta.canvasId` — see [Canvas § Spillover behavior](#canvas) and [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3).
 
-**Implementation status:** wired as of 2026-08-04 (Surface 2) — pages are created at import with per-page source dimensions, rendered in `PDFViewer` (single-page view, prev/next), each with its own markup layer. Canvas 0 is auto-created per the invariant above but has no UI yet (that's Surface 3).
+**Implementation status:** wired as of 2026-08-04 (Surface 2, extended Surface 3) — pages are created at import with per-page source dimensions, rendered in `PDFViewer` (single-page view, prev/next), each with its own markup layer. Canvas 0 is auto-created per the invariant above; Surface 3 added the corner button + right panel that surfaces it (and any additional linked canvases) in the UI.
 
 ### Canvas
 
@@ -176,16 +176,21 @@ interface Canvas {
 
 **Lifecycle:**
 - Create: `createCanvas(pageId, name)` → new canvas, next order value, isActive = (isFirstCanvas)
+- Create + activate: `createCanvasAndActivate(pageId, name)` → creates and immediately makes it the page's active canvas ("+" tab auto-focuses per ui-interaction.md §5)
 - Read: `getCanvas(id)` or `getCanvasesByPage(pageId)` → ordered by order
 - Update: `updateCanvas(id, updates)` → rename, change order, change isActive
-- Delete: `deleteCanvas(id)` → removes canvas; if it was active, make next canvas active
+- Set active: `setActiveCanvas(pageId, canvasId)` → updates `Page.activeCanvasId` (source of truth) and syncs every sibling `Canvas.isActive` to match, in one transaction
+- Delete: `deleteCanvas(id)` → removes the canvas row **and** its tldraw store (`canvas-${id}`); throws if it's the page's last remaining canvas (a page must always have at least one — never a null `activeCanvasId`); if the deleted canvas was active, the next-lowest-order sibling becomes active
 
 **Content storage:**
-- Strokes, shapes, text: Managed by tldraw, persisted separately
+- Strokes, shapes, text: Managed by tldraw, persisted separately (own store, `canvas-${canvasId}`)
+
+**Implementation status:** fully wired as of 2026-08-04 (Surface 3) — `app/components/RightPanel.tsx` renders the tab bar and the active canvas's own tldraw instance; `app/components/PDFViewer.tsx`'s `PageShell` owns the corner button, panel visibility, and `activeCanvasId` state (mirroring `Page.activeCanvasId`).
 
 **Spillover behavior:**
-- Only the active canvas's strokes that cross into the PDF page boundary render on the page
-- Switching active canvas swaps visible spillover (real-time, no load delay)
+- Only the active canvas's PDF-side spillover is visible on the page at once. **Storage decision (Surface 3, see [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3)):** spillover shapes live inside the *page's own* tldraw store (`page-${pageId}`), tagged with `meta.canvasId`, not inside the canvas's store and not computed on the fly. This supersedes the earlier "rendered on-top, not stored on page" note — that description predated the concrete implementation decision.
+- Switching active canvas swaps visible spillover by toggling opacity/lock on tagged shapes (real-time, no load delay) — see `app/components/spillover.ts`.
+- Real cross-layer strokes (next milestone) will populate these tagged shapes by splitting a stroke at the panel boundary; until then, `addTestSpillover` is a temporary test affordance used only to verify the visibility rule.
 
 ## Cross-Layer Strokes (Future)
 
@@ -199,7 +204,7 @@ interface CrossLayerStroke {
 }
 ```
 
-**Storage rule:** Store as two separate strokes in their respective coordinate spaces, linked by `strokeGroupId`. This allows each half to render independently and transform independently if pan/zoom changes.
+**Storage rule:** Store as two separate strokes in their respective coordinate spaces, linked by `strokeGroupId`. This allows each half to render independently and transform independently if pan/zoom changes. Concretely, under the Surface 3 spillover model, `pdfSegment` is a shape in the page's own tldraw store tagged with `meta.canvasId` (same mechanism `addTestSpillover` uses today) and `canvasSegment` is a shape in that canvas's own tldraw store (`canvas-${canvasId}`) — no new storage location is needed, only the logic that splits one drawn stroke into these two tagged pieces at the panel boundary.
 
 **Known limitation:** If one panel is panned/zoomed after a cross-layer stroke is drawn, the halves can visually separate (different coordinate transforms). This is accepted; not a bug to fix silently.
 
