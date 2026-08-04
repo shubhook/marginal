@@ -8,6 +8,7 @@ import {
   updateNotebook,
   deleteNotebook,
 } from "@/src/storage/db";
+import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 
 interface SidebarProps {
   onSelectNotebook?: (notebookId: string) => void;
@@ -19,6 +20,7 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
 
   // Load notebooks on mount
   useEffect(() => {
@@ -69,17 +71,23 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
     setEditingId(null);
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm("Delete this notebook? This cannot be undone.")) {
-      try {
-        await deleteNotebook(id);
-        setNotebooks(notebooks.filter((nb) => nb.id !== id));
-        if (activeNotebookId === id) {
-          onSelectNotebook?.(notebooks[0]?.id || null);
-        }
-      } catch (error) {
-        console.error("Failed to delete notebook:", error);
+  const handleDelete = (id: string) => {
+    setDeleteConfirmationId(id);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmationId) return;
+
+    try {
+      await deleteNotebook(deleteConfirmationId);
+      setNotebooks(notebooks.filter((nb) => nb.id !== deleteConfirmationId));
+      if (activeNotebookId === deleteConfirmationId) {
+        onSelectNotebook?.(notebooks[0]?.id || null);
       }
+    } catch (error) {
+      console.error("Failed to delete notebook:", error);
+    } finally {
+      setDeleteConfirmationId(null);
     }
   };
 
@@ -173,6 +181,15 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
       <div className="p-4 border-t border-[#2a2a2a] text-[#8a8a8a] text-xs">
         {notebooks.length} notebook{notebooks.length !== 1 ? "s" : ""}
       </div>
+
+      <DeleteConfirmationDialog
+        isOpen={deleteConfirmationId !== null}
+        title="Delete Notebook"
+        message="Delete this notebook? This cannot be undone."
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteConfirmationId(null)}
+        isDangerous
+      />
     </div>
   );
 }
