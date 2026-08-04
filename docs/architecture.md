@@ -106,10 +106,15 @@ RootLayout
 └── AppContainer (client-only, mounted after hydration)
      ├── Sidebar (notebook list, CRUD)
      │   └── DeleteConfirmationDialog (overlay)
-     └── Main surface (Editor or empty state)
-         └── Editor
-             └── tldraw instance
+     └── Main surface (state-driven: notebook → boards → board)
+         ├── (no notebook selected) → empty state
+         ├── (notebook selected, no board open) → BoardList (board list, CRUD)
+         │    └── DeleteConfirmationDialog (overlay)
+         └── (board open) → Editor
+              └── tldraw instance (persistenceKey scoped to `board-${boardId}`)
 ```
+
+**Note on this hierarchy:** an earlier pass scoped the tldraw `persistenceKey` directly to `notebookId`, which collapsed Notebook → Board → Canvas into Notebook → Canvas — a notebook could only ever hold one implicit canvas, not multiple named boards. This was corrected: `AppContainer` now tracks `activeBoardId` alongside `activeNotebookId`, selecting a notebook shows `BoardList` (not a canvas), and only opening a specific board mounts `Editor` with a `board-${boardId}` persistence key. This matches the entity hierarchy described above and in [Data Model](./data-model.md).
 
 ## Storage Architecture
 

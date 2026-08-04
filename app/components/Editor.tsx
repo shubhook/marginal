@@ -4,12 +4,13 @@ import { Tldraw } from "tldraw";
 import "tldraw/tldraw.css";
 
 interface EditorProps {
-  notebookId?: string | null;
+  boardId: string;
 }
 
-export function Editor({ notebookId }: EditorProps) {
-  // Use notebook ID in persistence key so each notebook has its own canvas state
-  const persistenceKey = notebookId ? `notebook-${notebookId}` : "marginal-editor-default";
+export function Editor({ boardId }: EditorProps) {
+  // Scope persistence to the board, not the notebook — a notebook can hold
+  // multiple boards, each needing an independent canvas state.
+  const persistenceKey = `board-${boardId}`;
 
   return (
     <div className="w-full h-full">

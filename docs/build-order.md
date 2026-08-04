@@ -32,25 +32,32 @@ The coordinate-transform system underpins every later surface. If the math is wr
 **Purpose:** Infinite canvas with drawing, shapes, and text. No PDF yet.
 
 **Deliverables:**
-- Board creation (CRUD in sidebar, persist to IndexedDB)
-- Infinite canvas using tldraw
+- Board creation (CRUD in sidebar, persist to IndexedDB) ✅
+- Infinite canvas using tldraw ✅
 - Pan/zoom with coordinate transforms validated in real UI
-- Freehand draw (pen tool)
-- Shapes (rectangle, circle, line via tldraw)
-- Text tool
-- Toolbar (Excalidraw-style floating pill, bottom-center)
-- Tool keyboard shortcuts (v=select, p=pen, r=rectangle, t=text, e=eraser)
-- Undo/redo
+- Freehand draw (pen tool) ✅ (via tldraw default toolbar)
+- Shapes (rectangle, circle, line via tldraw) ✅ (via tldraw default toolbar)
+- Text tool ✅ (via tldraw default toolbar)
+- Tool keyboard shortcuts (v=select, p=pen, r=rectangle, t=text, e=eraser) — provided by tldraw defaults; custom bindings not layered on top yet
+- Undo/redo ✅ (via tldraw default toolbar)
+
+**Explicitly deferred to Polish (not a Surface 1 blocker):**
+- Custom floating-pill toolbar styling (STYLING.md §5 / UI.md §3). tldraw's stock toolbar is used as-is for now — it already provides select/pen/shapes/text/eraser/undo/redo. Restyling it to match the dark, icon-only, bottom-center pill is a visual-polish task, not an architecture task, and doesn't block calling Surface 1 "done."
 
 **Data model changes:**
-- None (schema already supports this)
+- None (schema already supports this) — see [Board entity wiring](./data-model.md#board) for the fix that connected the existing `Board` schema to the UI.
 
 **Acceptance Criteria:**
+- ✓ Notebook shows a list of Boards (not an immediately-mounted canvas) — empty state offers "create a board"
 - ✓ Can create a board, draw a stroke, reload page, stroke persists
+- ✓ Two boards in the same notebook have independent, isolated canvas state (verified via browser automation — see below)
 - ✓ Pan/zoom work smoothly
 - ✓ Coordinate transforms are still validated (draw at various zoom levels, pan mid-stroke)
-- ✓ Toolbar matches STYLING.md (floating pill, icon-only, subtle hover)
+- ✓ Deleting a notebook cascades to delete its boards (verified at the IndexedDB level, not just UI)
+- ~~Toolbar matches STYLING.md~~ — deferred to Polish, see above
 - ✓ Previous milestone (notebook sidebar) still works (spot check)
+
+**Verification (2026-08-04):** Manually tested via browser automation — created a notebook, created two boards inside it, drew a distinct stroke on each, confirmed each board round-trips through a full page reload with its own state intact and no cross-contamination. Deleted the notebook and confirmed via direct IndexedDB inspection that both boards were removed (0 notebooks, 0 boards, no orphans).
 
 ### 3. Surface 2: PDF Import & Direct Markup
 

@@ -11,7 +11,7 @@ import {
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 
 interface SidebarProps {
-  onSelectNotebook?: (notebookId: string) => void;
+  onSelectNotebook?: (notebookId: string | null) => void;
   activeNotebookId?: string | null;
 }
 

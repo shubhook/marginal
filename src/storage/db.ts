@@ -101,7 +101,7 @@ export async function getBoard(id: string): Promise<Board | undefined> {
 }
 
 export async function getBoardsByNotebook(notebookId: string): Promise<Board[]> {
-  return db.boards.where("notebookId").equals(notebookId).orderBy("order").toArray();
+  return db.boards.where("notebookId").equals(notebookId).sortBy("order");
 }
 
 export async function updateBoard(
@@ -145,7 +145,7 @@ export async function getPDFDocument(id: string): Promise<PDFDocument | undefine
 }
 
 export async function getPDFsByNotebook(notebookId: string): Promise<PDFDocument[]> {
-  return db.pdfDocuments.where("notebookId").equals(notebookId).orderBy("createdAt").toArray();
+  return db.pdfDocuments.where("notebookId").equals(notebookId).sortBy("createdAt");
 }
 
 export async function updatePDFDocument(
@@ -204,7 +204,7 @@ export async function getPage(id: string): Promise<Page | undefined> {
 }
 
 export async function getPagesByPDF(pdfDocumentId: string): Promise<Page[]> {
-  return db.pages.where("pdfDocumentId").equals(pdfDocumentId).orderBy("pageNumber").toArray();
+  return db.pages.where("pdfDocumentId").equals(pdfDocumentId).sortBy("pageNumber");
 }
 
 export async function updatePage(
@@ -255,7 +255,7 @@ export async function getCanvas(id: string): Promise<Canvas | undefined> {
 }
 
 export async function getCanvasesByPage(pageId: string): Promise<Canvas[]> {
-  return db.canvases.where("pageId").equals(pageId).orderBy("order").toArray();
+  return db.canvases.where("pageId").equals(pageId).sortBy("order");
 }
 
 export async function updateCanvas(

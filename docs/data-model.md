@@ -66,6 +66,8 @@ interface Board {
 - Update: `updateBoard(id, updates)` → rename, change order
 - Delete: `deleteBoard(id)` → removes board (no cascade; tldraw data separately managed)
 
+**Implementation status:** fully wired as of 2026-08-04 — `app/components/BoardList.tsx` renders when a Notebook is selected (create/rename/delete boards), and `app/components/Editor.tsx` mounts a tldraw instance scoped to `board-${boardId}` only once a specific board is opened. (An earlier revision skipped this — the Editor mounted directly off `notebookId`, collapsing Notebook→Board→Canvas into Notebook→Canvas. See [Architecture](./architecture.md#component-tree) for the corrected component tree.)
+
 **Content storage:**
 - Strokes, shapes, text: Managed by tldraw, persisted separately (not in Dexie in v1)
 
