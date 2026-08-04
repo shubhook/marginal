@@ -1,10 +1,11 @@
 import Dexie, { type Table } from "dexie";
-import type { Notebook, Board, PDFDocument, Page, Canvas } from "./types";
+import type { Notebook, Board, PDFDocument, PDFFile, Page, Canvas } from "./types";
 
 export class MarginalDB extends Dexie {
   notebooks!: Table<Notebook>;
   boards!: Table<Board>;
   pdfDocuments!: Table<PDFDocument>;
+  pdfFiles!: Table<PDFFile>;
   pages!: Table<Page>;
   canvases!: Table<Canvas>;
 
@@ -17,10 +18,28 @@ export class MarginalDB extends Dexie {
       pages: "id, pdfDocumentId, pageNumber, createdAt",
       canvases: "id, pageId, order, createdAt",
     });
+    // v2: raw PDF bytes in their own table, keyed by pdfDocumentId, so
+    // metadata queries never pull file contents.
+    this.version(2).stores({
+      pdfFiles: "pdfDocumentId",
+    });
   }
 }
 
 export const db = new MarginalDB();
+
+// tldraw persists each surface's strokes in its own IndexedDB database named
+// `${TLDRAW_DB_PREFIX}${persistenceKey}`. Deleting a Board or Page must also
+// delete that database, or the markup would be orphaned forever.
+const TLDRAW_DB_PREFIX = "TLDRAW_DOCUMENT_v2";
+
+export function deleteTldrawData(persistenceKey: string): Promise<void> {
+  return new Promise((resolve) => {
+    const req = indexedDB.deleteDatabase(`${TLDRAW_DB_PREFIX}${persistenceKey}`);
+    // Resolve on blocked too — deletion completes once open connections close.
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+}
 
 // Notebook operations
 export async function createNotebook(name: string): Promise<Notebook> {
@@ -59,22 +78,40 @@ export async function updateNotebook(
 }
 
 export async function deleteNotebook(id: string): Promise<void> {
-  await db.transaction("rw", db.notebooks, db.boards, db.pdfDocuments, async () => {
-    // Delete all boards in this notebook
-    const boards = await db.boards.where("notebookId").equals(id).toArray();
-    for (const board of boards) {
-      await db.boards.delete(board.id);
-    }
+  // Collect the full subtree first so markup stores can be cleaned afterwards
+  // (indexedDB.deleteDatabase can't run inside a Dexie transaction).
+  const boards = await db.boards.where("notebookId").equals(id).toArray();
+  const pdfs = await db.pdfDocuments.where("notebookId").equals(id).toArray();
+  const pdfIds = pdfs.map((p) => p.id);
+  const pages = pdfIds.length
+    ? await db.pages.where("pdfDocumentId").anyOf(pdfIds).toArray()
+    : [];
 
-    // Delete all PDFs and their pages/canvases in this notebook
-    const pdfs = await db.pdfDocuments.where("notebookId").equals(id).toArray();
-    for (const pdf of pdfs) {
-      await deletePDFDocument(pdf.id);
+  await db.transaction(
+    "rw",
+    [db.notebooks, db.boards, db.pdfDocuments, db.pdfFiles, db.pages, db.canvases],
+    async () => {
+      for (const board of boards) {
+        await db.boards.delete(board.id);
+      }
+      for (const page of pages) {
+        await db.canvases.where("pageId").equals(page.id).delete();
+        await db.pages.delete(page.id);
+      }
+      for (const pdfId of pdfIds) {
+        await db.pdfFiles.delete(pdfId);
+        await db.pdfDocuments.delete(pdfId);
+      }
+      await db.notebooks.delete(id);
     }
+  );
 
-    // Delete the notebook itself
-    await db.notebooks.delete(id);
-  });
+  for (const board of boards) {
+    await deleteTldrawData(`board-${board.id}`);
+  }
+  for (const page of pages) {
+    await deleteTldrawData(`page-${page.id}`);
+  }
 }
 
 // Board operations
@@ -116,6 +153,7 @@ export async function updateBoard(
 
 export async function deleteBoard(id: string): Promise<void> {
   await db.boards.delete(id);
+  await deleteTldrawData(`board-${id}`);
 }
 
 // PDFDocument operations
@@ -159,16 +197,33 @@ export async function updatePDFDocument(
 }
 
 export async function deletePDFDocument(id: string): Promise<void> {
-  await db.transaction("rw", db.pdfDocuments, db.pages, db.canvases, async () => {
-    // Delete all pages and canvases
-    const pages = await db.pages.where("pdfDocumentId").equals(id).toArray();
-    for (const page of pages) {
-      await deletePage(page.id);
-    }
+  const pages = await db.pages.where("pdfDocumentId").equals(id).toArray();
 
-    // Delete the PDF document itself
+  await db.transaction("rw", db.pdfDocuments, db.pdfFiles, db.pages, db.canvases, async () => {
+    for (const page of pages) {
+      const canvases = await db.canvases.where("pageId").equals(page.id).toArray();
+      for (const canvas of canvases) {
+        await db.canvases.delete(canvas.id);
+      }
+      await db.pages.delete(page.id);
+    }
+    await db.pdfFiles.delete(id);
     await db.pdfDocuments.delete(id);
   });
+
+  // Markup stores live outside Dexie, so clean them after the transaction.
+  for (const page of pages) {
+    await deleteTldrawData(`page-${page.id}`);
+  }
+}
+
+export async function savePDFFile(pdfDocumentId: string, data: ArrayBuffer): Promise<void> {
+  await db.pdfFiles.put({ pdfDocumentId, data });
+}
+
+export async function getPDFFile(pdfDocumentId: string): Promise<ArrayBuffer | undefined> {
+  const row = await db.pdfFiles.get(pdfDocumentId);
+  return row?.data;
 }
 
 // Page operations
@@ -228,6 +283,9 @@ export async function deletePage(id: string): Promise<void> {
     // Delete the page itself
     await db.pages.delete(id);
   });
+
+  // Markup store lives outside Dexie, so clean it after the transaction.
+  await deleteTldrawData(`page-${id}`);
 }
 
 // Canvas operations

@@ -64,7 +64,7 @@ interface Board {
 - Create: `createBoard(notebookId, name)` → new board, next order value
 - Read: `getBoard(id)` or `getBoardsByNotebook(notebookId)` → ordered by order
 - Update: `updateBoard(id, updates)` → rename, change order
-- Delete: `deleteBoard(id)` → removes board (no cascade; tldraw data separately managed)
+- Delete: `deleteBoard(id)` → removes the board row **and** its tldraw store (`board-${id}`), so strokes don't orphan
 
 **Implementation status:** fully wired as of 2026-08-04 — `app/components/BoardList.tsx` renders when a Notebook is selected (create/rename/delete boards), and `app/components/Editor.tsx` mounts a tldraw instance scoped to `board-${boardId}` only once a specific board is opened. (An earlier revision skipped this — the Editor mounted directly off `notebookId`, collapsing Notebook→Board→Canvas into Notebook→Canvas. See [Architecture](./architecture.md#component-tree) for the corrected component tree.)
 
@@ -97,8 +97,26 @@ interface PDFDocument {
 - Delete: `deletePDFDocument(id)` → cascades to all Pages and Canvases
 
 **Content storage:**
-- PDF file: Stored separately (blob/file storage TBD in PDF import phase)
-- Page images: Rendered on-demand via PDF.js
+- PDF file: raw bytes in the `pdfFiles` table (see below), keyed by `pdfDocumentId`
+- Page images: rendered on demand via PDF.js and cached (in-memory per session, and as the persisted background shape in each page's tldraw store)
+
+**Implementation status:** fully wired as of 2026-08-04 (Surface 2) — `NotebookContents` lists PDFs alongside boards with import/rename/delete, `importPdfFile()` (src/pdf/importPdf.ts) creates the PDFDocument + one Page per source page with dimensions read from each page's viewport, and `PDFViewer` renders pages with a per-page markup layer.
+
+### PDFFile
+
+Raw PDF bytes, stored separately from `PDFDocument` metadata so listing PDFs in the sidebar never loads file contents. Added in Dexie schema **version 2**.
+
+```typescript
+interface PDFFile {
+  pdfDocumentId: string;     // Primary key; 1:1 with PDFDocument
+  data: ArrayBuffer;         // The original imported file bytes
+}
+```
+
+**Lifecycle:**
+- Create: `savePDFFile(pdfDocumentId, data)` during import
+- Read: `getPDFFile(pdfDocumentId)` when the renderer first needs the document in a session
+- Delete: removed inside the `deletePDFDocument` / `deleteNotebook` cascades
 
 ### Page
 
@@ -130,8 +148,10 @@ interface Page {
 - Delete: `deletePage(id)` → cascades to all Canvases
 
 **Content storage:**
-- Direct markup: Strokes on page itself (separate storage, not in entity)
+- Direct markup: strokes live in the page's own tldraw store (persistenceKey `page-${pageId}`), in PDF-page coordinates — see [Architecture § PDF Rendering](./architecture.md#pdf-rendering--direct-markup-surface-2). Deleted along with the page (`deletePage`/cascades remove the tldraw store too).
 - Spillover from active canvas: Rendered on-top (not stored on page; computed from Canvas)
+
+**Implementation status:** wired as of 2026-08-04 (Surface 2) — pages are created at import with per-page source dimensions, rendered in `PDFViewer` (single-page view, prev/next), each with its own markup layer. Canvas 0 is auto-created per the invariant above but has no UI yet (that's Surface 3).
 
 ### Canvas
 
@@ -192,6 +212,7 @@ Dexie indexes for efficient queries:
 | notebooks | id | order, createdAt | List all, sort by order |
 | boards | id | notebookId, order, createdAt | Get boards in notebook |
 | pdfDocuments | id | notebookId, createdAt | Get PDFs in notebook |
+| pdfFiles | pdfDocumentId | — | Raw PDF bytes, fetched once per session (v2) |
 | pages | id | pdfDocumentId, pageNumber, createdAt | Get pages in PDF |
 | canvases | id | pageId, order, createdAt | Get canvases for page |
 

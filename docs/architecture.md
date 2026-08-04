@@ -106,15 +106,30 @@ RootLayout
 └── AppContainer (client-only, mounted after hydration)
      ├── Sidebar (notebook list, CRUD)
      │   └── DeleteConfirmationDialog (overlay)
-     └── Main surface (state-driven: notebook → boards → board)
+     └── Main surface (state-driven: notebook → contents → item)
          ├── (no notebook selected) → empty state
-         ├── (notebook selected, no board open) → BoardList (board list, CRUD)
+         ├── (notebook selected, nothing open) → NotebookContents
+         │    │  (boards + PDFs together: create board, import PDF,
+         │    │   rename/delete either — per UI navigation model)
          │    └── DeleteConfirmationDialog (overlay)
-         └── (board open) → Editor
-              └── tldraw instance (persistenceKey scoped to `board-${boardId}`)
+         ├── (board open) → Editor
+         │    └── tldraw instance (persistenceKey `board-${boardId}`)
+         └── (PDF open) → PDFViewer
+              ├── page nav bar (single-page view, prev/next)
+              └── PageMarkupEditor (one per page, keyed by pageId)
+                   └── tldraw instance (persistenceKey `page-${pageId}`)
 ```
 
-**Note on this hierarchy:** an earlier pass scoped the tldraw `persistenceKey` directly to `notebookId`, which collapsed Notebook → Board → Canvas into Notebook → Canvas — a notebook could only ever hold one implicit canvas, not multiple named boards. This was corrected: `AppContainer` now tracks `activeBoardId` alongside `activeNotebookId`, selecting a notebook shows `BoardList` (not a canvas), and only opening a specific board mounts `Editor` with a `board-${boardId}` persistence key. This matches the entity hierarchy described above and in [Data Model](./data-model.md).
+**Note on this hierarchy:** an earlier pass scoped the tldraw `persistenceKey` directly to `notebookId`, which collapsed Notebook → Board → Canvas into Notebook → Canvas — a notebook could only ever hold one implicit canvas, not multiple named boards. This was corrected: `AppContainer` tracks an `activeItem` (`board` or `pdf`) alongside `activeNotebookId`, selecting a notebook shows `NotebookContents` (not a canvas), and only opening a specific item mounts its editor. This matches the entity hierarchy described above and in [Data Model](./data-model.md).
+
+## PDF Rendering & Direct Markup (Surface 2)
+
+**Decided implementation (2026-08-04):**
+
+- **Page navigation: single-page view with prev/next buttons** (not vertical scroll). One tldraw instance is mounted at a time, keyed by pageId, which keeps every page's markup store isolated and mirrors the board pattern exactly. Vertical scroll was the rejected alternative — it would require many simultaneous tldraw instances or a custom unified surface, neither justified for v1.
+- **Rendering pipeline:** `src/pdf/pdfjs.ts` loads PDF.js lazily via dynamic import (PDF.js touches browser globals at module scope, so a static import would break Next's SSR pass even in client components). `src/pdf/renderer.ts` caches the parsed document per PDFDocument and the rendered bitmap per Page (2× oversampled PNG with the 1px `border-subtle` page outline baked in).
+- **Coordinate model:** the rendered page bitmap is inserted **inside** the page's tldraw instance as a locked image shape at (0,0) sized to the page's native PDF-point dimensions. PDF-page space and tldraw page space are therefore **identical by construction** — a stroke at tldraw (x, y) is at PDF point (x, y), and the tldraw camera plays the role of the `Transform` from `src/canvas/coordinates.ts` (`pdfToWorld`/`worldToPdf` with the identity page placement). Pan/zoom moves page and markup together, so markup can never drift relative to the page, and no new coordinate math exists anywhere in the PDF path.
+- **Bitmap persistence:** the background image shape (deterministic id `pdfbg-${pageId}`) and its asset persist in the page's tldraw store, so a page is re-rendered by PDF.js only if its store doesn't already contain the background (first open), not on every visit.
 
 ## Storage Architecture
 

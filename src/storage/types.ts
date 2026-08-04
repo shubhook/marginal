@@ -29,6 +29,13 @@ export interface PDFDocument {
   updatedAt: number;
 }
 
+// Raw PDF bytes, stored separately from PDFDocument metadata so listing
+// PDFs in the sidebar never loads file contents.
+export interface PDFFile {
+  pdfDocumentId: string;
+  data: ArrayBuffer;
+}
+
 export interface Board {
   id: string;
   notebookId: string;

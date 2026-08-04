@@ -59,30 +59,35 @@ The coordinate-transform system underpins every later surface. If the math is wr
 
 **Verification (2026-08-04):** Manually tested via browser automation — created a notebook, created two boards inside it, drew a distinct stroke on each, confirmed each board round-trips through a full page reload with its own state intact and no cross-contamination. Deleted the notebook and confirmed via direct IndexedDB inspection that both boards were removed (0 notebooks, 0 boards, no orphans).
 
-### 3. Surface 2: PDF Import & Direct Markup
+### 3. Surface 2: PDF Import & Direct Markup ✅ (Complete — 2026-08-04)
 
 **Purpose:** Import PDF, render pages, mark up directly.
 
 **Deliverables:**
-- PDF file upload (file input, store in IndexedDB or as reference)
-- PDF.js integration to render pages
-- PDFDocument CRUD in sidebar (create/rename/delete)
-- Page navigation (within a PDF)
-- Direct markup layer on page (draw straight on page coordinate space)
-- Markup tools scoped to page (pen, shapes, text, eraser, highlighter)
-- Corner button on PDF page (top-right, small) to toggle right panel
-- Auto-create Canvas 0 per page (already in data model, just surface it in UI)
+- PDF file upload (file picker, raw bytes stored in the `pdfFiles` Dexie table) ✅
+- PDF.js integration to render pages (lazy-loaded, cached — see [Architecture](./architecture.md#pdf-rendering--direct-markup-surface-2)) ✅
+- PDFDocument CRUD alongside Boards in `NotebookContents` (import/rename/delete) ✅
+- Page navigation: **single-page view with prev/next** (chosen over vertical scroll — one tldraw instance mounted at a time, mirrors the board pattern) ✅
+- Direct markup layer on page (per-page tldraw store `page-${pageId}`, PDF-page coordinates by construction) ✅
+- Markup tools scoped to page — tldraw default toolbar (pen, shapes, text, eraser; custom pill + highlighter deferred to Polish, same decision as Surface 1) ✅
+- Auto-create Canvas 0 per page — done at the data layer since Foundation; **surfacing it in UI (corner button, right panel) is Surface 3**, not this milestone
+- Cascading delete: PDF → pages → canvases → stored bytes → per-page markup stores ✅
 
 **Data model changes:**
-- None (schema already supports Page and Canvas)
+- Dexie **version 2**: added `pdfFiles` table (raw bytes keyed by `pdfDocumentId`) — see [Data Model](./data-model.md#pdffile)
+- `deleteBoard`/`deletePage`/`deletePDFDocument`/`deleteNotebook` now also delete the corresponding tldraw markup stores (no orphaned strokes)
 
 **Acceptance Criteria:**
 - ✓ Upload a PDF, see pages rendered at native aspect ratio
-- ✓ Draw markup on a page, reload, markup persists
-- ✓ Toolbar switches context (pen on page vs. on linked canvas)
-- ✓ Page dimensions are correct and stable across pan/zoom
-- ✓ Canvas 0 exists and renders spillover correctly (though no cross-layer drawing yet)
-- ✓ Surfaces 1 and 2 coexist (can switch between a board and a PDF without breaking either)
+- ✓ Page dimensions come from each source page, not assumed (verified with a 3-page PDF where every page has different dimensions: 612×792, 595×842, 400×300)
+- ✓ Draw markup on a page, navigate away and back, reload — markup persists, position-accurate relative to page content
+- ✓ Page dimensions are correct and stable across pan/zoom (page bitmap and markup live in the same tldraw space, so they cannot desync)
+- ✓ Deleting the PDF cascades: 0 pages, 0 canvases, 0 stored bytes, 0 markup stores (verified via direct IndexedDB inspection)
+- ✓ Surfaces 1 and 2 coexist (board created and drawn on after PDF work, no breakage)
+
+**Verification (2026-08-04):** via browser automation — imported the mixed-size 3-page PDF, confirmed per-page dimensions/aspect (zoom-to-fit at 84%/79%/222% respectively), drew an underline beneath page 1's title, navigated 1→2→3→1 and reloaded with the stroke staying exactly under the title, then deleted the PDF and confirmed the full cascade at the IndexedDB level.
+
+**Next:** Surface 3 (linked side-canvases) — the corner button, right panel, canvas tabs, and spillover. Cross-layer drawing then has both of its prerequisites in place.
 
 ### 4. Surface 3: Linked Side-Canvases
 

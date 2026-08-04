@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
-import { BoardList } from "./BoardList";
+import { NotebookContents, type NotebookItemRef } from "./NotebookContents";
 import { Editor } from "./Editor";
+import { PDFViewer } from "./PDFViewer";
 
 export function AppContainer() {
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
-  const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
+  const [activeItem, setActiveItem] = useState<NotebookItemRef | null>(null);
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
@@ -16,7 +17,7 @@ export function AppContainer() {
 
   const handleSelectNotebook = (notebookId: string | null) => {
     setActiveNotebookId(notebookId);
-    setActiveBoardId(null); // switching notebooks always drops back to the board list
+    setActiveItem(null); // switching notebooks always drops back to the contents list
   };
 
   // Render placeholder on server to avoid hydration mismatch
@@ -50,21 +51,28 @@ export function AppContainer() {
               </p>
             </div>
           </div>
-        ) : !activeBoardId ? (
-          <BoardList notebookId={activeNotebookId} onOpenBoard={setActiveBoardId} />
+        ) : !activeItem ? (
+          <NotebookContents
+            notebookId={activeNotebookId}
+            onOpenItem={setActiveItem}
+          />
         ) : (
           <div className="flex-1 flex flex-col">
             <div className="px-4 py-2 border-b border-[#2a2a2a]">
               <button
-                onClick={() => setActiveBoardId(null)}
+                onClick={() => setActiveItem(null)}
                 className="text-[#8a8a8a] hover:text-[#f0f0f0] text-xs"
               >
-                ← Boards
+                ← Contents
               </button>
             </div>
-            <div className="flex-1">
-              <Editor boardId={activeBoardId} />
-            </div>
+            {activeItem.type === "board" ? (
+              <div className="flex-1">
+                <Editor boardId={activeItem.id} />
+              </div>
+            ) : (
+              <PDFViewer pdfDocumentId={activeItem.id} />
+            )}
           </div>
         )}
       </main>
