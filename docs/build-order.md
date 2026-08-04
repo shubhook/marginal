@@ -157,6 +157,7 @@ No strict test coverage target; focus on catching bugs in infrastructure (coordi
 
 | Feature | Trigger | Phase |
 |---------|---------|-------|
+| Trash/Recently Deleted | Accidental deletions become a real problem | Polish or Post-v1 |
 | next-auth + Postgres backend | Multi-device access actually needed | Post-v1 |
 | Cross-device sync | Depends on backend | Post-v1 |
 | OCR | Tesseract.js as stopgap; API later | Post-v1 or Polish |

@@ -99,6 +99,7 @@ If any of these three fail in practice, that's a signal to revisit this PRD, not
 
 | Feature | Trigger for building it |
 |---|---|
+| Trash/Recently Deleted | After accidental deletions become a real problem; restore deleted notebooks from trash |
 | next-auth + Postgres backend | When cross-device access is actually needed |
 | Multi-device sync | Depends on backend; IndexedDB becomes local cache, Postgres source of truth |
 | OCR | Tesseract.js client-side as stopgap; real OCR API once backend exists |
