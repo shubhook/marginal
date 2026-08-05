@@ -192,9 +192,9 @@ interface Canvas {
 - Switching active canvas swaps visible spillover by toggling opacity/lock on tagged shapes (real-time, no load delay) — see `app/components/spillover.ts`.
 - Real cross-layer strokes (next milestone) will populate these tagged shapes by splitting a stroke at the panel boundary; until then, `addTestSpillover` is a temporary test affordance used only to verify the visibility rule.
 
-## Cross-Layer Strokes (Future)
+## Cross-Layer Strokes
 
-When a stroke spans both PDF page and linked canvas (cross-layer drawing):
+**Implemented 2026-08-05.** When a stroke spans both PDF page and linked canvas (cross-layer drawing):
 
 ```typescript
 interface CrossLayerStroke {
@@ -204,7 +204,7 @@ interface CrossLayerStroke {
 }
 ```
 
-**Storage rule:** Store as two separate strokes in their respective coordinate spaces, linked by `strokeGroupId`. This allows each half to render independently and transform independently if pan/zoom changes. Concretely, under the Surface 3 spillover model, `pdfSegment` is a shape in the page's own tldraw store tagged with `meta.canvasId` (same mechanism `addTestSpillover` uses today) and `canvasSegment` is a shape in that canvas's own tldraw store (`canvas-${canvasId}`) — no new storage location is needed, only the logic that splits one drawn stroke into these two tagged pieces at the panel boundary.
+**Storage rule:** Store as two separate strokes in their respective coordinate spaces, linked by `strokeGroupId`. This allows each half to render independently and transform independently if pan/zoom changes. Concretely, under the Surface 3 spillover model, `pdfSegment` is a `line`-type shape in the page's own tldraw store tagged with `meta: { canvasId, strokeGroupId }` (same `meta.canvasId` mechanism `addTestSpillover` used as a placeholder) and `canvasSegment` is a `line`-type shape in that canvas's own tldraw store (`canvas-${canvasId}`), tagged `meta: { strokeGroupId }` — no new storage location was needed, only the logic (`app/components/crossLayerDrawing.ts`) that splits one drawn stroke into these two tagged pieces at the panel boundary. See [Architecture § Cross-Layer Drawing](./architecture.md#cross-layer-drawing-2026-08-05).
 
 **Known limitation:** If one panel is panned/zoomed after a cross-layer stroke is drawn, the halves can visually separate (different coordinate transforms). This is accepted; not a bug to fix silently.
 

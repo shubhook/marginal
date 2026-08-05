@@ -25,6 +25,7 @@ import { renderPageBitmap } from "@/src/pdf/renderer";
 import { addTestSpillover, applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
 import { RightPanel } from "./RightPanel";
 import { FloatingTldrawUi } from "./FloatingTldrawUi";
+import { CrossLayerCapture } from "./CrossLayerCapture";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 
 interface PDFViewerProps {
@@ -312,7 +313,7 @@ function PageShell({
       </div>
 
       {/* Body row: PDF panel | divider | canvas panel */}
-      <div ref={splitContainerRef} className="flex-1 flex overflow-hidden p-2 gap-0">
+      <div ref={splitContainerRef} className="relative flex-1 flex overflow-hidden p-2 gap-0">
         <div
           className="relative flex-1 min-w-0 border border-[#2a2a2a] rounded-md overflow-hidden bg-[#121212]"
           style={{ minWidth: MIN_PAGE_PANEL_WIDTH }}
@@ -353,6 +354,16 @@ function PageShell({
             >
               <RightPanel activeCanvasId={activeCanvasId} onEditorMount={setCanvasEditor} />
             </div>
+            <CrossLayerCapture
+              pageEditor={pageEditor}
+              canvasEditor={canvasEditor}
+              activeCanvasId={activeCanvasId}
+              activeEditorRef={activeEditorRef}
+              activeEditorVersion={activeEditorVersion}
+              rightPanelWidth={rightPanelWidth}
+              splitContainerRef={splitContainerRef}
+              onActivatePanel={setActivePanel}
+            />
           </>
         )}
       </div>

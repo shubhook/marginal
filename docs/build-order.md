@@ -131,7 +131,7 @@ The coordinate-transform system underpins every later surface. If the math is wr
 
 **Fix Pass III (2026-08-05):** the hand-built Capsule from Fix Pass II was itself replaced — it worked but silently dropped real tldraw functionality (no style panel, no hand tool, arrow, sticky note, image upload, more-tools overflow). Swapped in tldraw's actual `DefaultToolbar`/`DefaultStylePanel` components instead, shared across both panels via the same `activeEditorRef` mechanism (unchanged) — see [Architecture](./architecture.md#surface-3-fix-pass-iii--tldraws-own-ui-collapsible-sidebar-2026-08-05) for the three tldraw internals (editor context, container context, portal theming) this took to get working standalone. Also added a collapsible sidebar (icon rail + notebook-switcher popover, `localStorage`-persisted) for laptop/tablet horizontal-space reasons, and re-verified (not changed — it was already correct) that the PDF page nav centers within its own panel rather than the full window.
 
-### 5. Cross-Layer Drawing
+### 5. Cross-Layer Drawing ✅ (Complete — 2026-08-05)
 
 **Purpose:** Draw continuously across PDF page ↔ linked canvas boundary.
 
@@ -140,24 +140,29 @@ The coordinate-transform system underpins every later surface. If the math is wr
 - The `activePanel`/`activeEditorRef` tracking and the PDF panel's camera lock from the Fix Pass II above — knowing which panel a drag started in, and having a stable (non-pannable) coordinate frame for the PDF side, are both prerequisites for routing and anchoring a cross-boundary stroke correctly.
 
 **Deliverables:**
-- Transparent screen-space overlay capturing drags across panel boundary
-- Mid-drag stroke rendering (stroke spans both surfaces in real time while drawing)
-- Stroke splitting at panel boundary after completion
-- Storage: two linked segments per cross-boundary stroke (shared strokeGroupId) — PDF-side segment as a `meta.canvasId`-tagged shape in the page's store (same mechanism as the Surface 3 test affordance), canvas-side segment in that canvas's own store
-- Spillover rendering rule already enforced by Surface 3 (only active canvas spillover visible) — this milestone only needs to create correctly-tagged shapes, not rebuild visibility
-- Known limitation: if either panel is panned/zoomed after a cross-boundary stroke, halves can separate (documented, not a bug to fix silently)
+- Transparent screen-space overlay capturing drags across panel boundary ✅ (`app/components/CrossLayerCapture.tsx` — only mounts when the active tool is `draw`; a narrow strip straddling the divider, positioned from the same layout values the divider itself uses, not a separate DOM measurement)
+- Mid-drag stroke rendering (stroke spans both surfaces in real time while drawing) ✅ (a `position: fixed` SVG polyline over both panels, rendered from buffered screen points — no seam at the boundary regardless of either panel's zoom/pan, since it doesn't go through either editor's camera until release)
+- Stroke splitting at panel boundary after completion ✅ (`splitPointsAtDivider()` in `app/components/crossLayerDrawing.ts`)
+- Storage: two linked segments per cross-boundary stroke (shared strokeGroupId) — PDF-side segment as a `meta.canvasId`-tagged shape in the page's store (same mechanism as the Surface 3 test affordance), canvas-side segment in that canvas's own store ✅
+- Spillover rendering rule already enforced by Surface 3 (only active canvas spillover visible) — this milestone only needed to create correctly-tagged shapes, not rebuild visibility ✅ (verified: switching active canvas tab hides/reshows the PDF-side segment correctly, no new spillover code needed)
+- Known limitation: if either panel is panned/zoomed after a cross-boundary stroke, halves can separate (documented, not a bug to fix silently) ✅ (verified directly — see below)
 
 **Data model changes:**
 - None (strokeGroupId already in schema; cross-layer strokes are two linked segments)
 
+**Coordinate approach:** point conversion deliberately does **not** extend `src/canvas/coordinates.ts` — it uses each editor's own `editor.screenToPage()` directly (tldraw's camera *is* the Transform once a surface is a real tldraw instance, same precedent as the PDF page and spillover). See [Coordinates § Cross-Layer Drawing](./coordinates.md#cross-layer-drawing-resolving-the-forward-looking-note-above-2026-08-05) and [Architecture § Cross-Layer Drawing](./architecture.md#cross-layer-drawing-2026-08-05) for the full reasoning.
+
 **Acceptance Criteria:**
 - ✓ Draw a stroke starting on PDF page, drag into canvas panel, release → one continuous visible stroke
-- ✓ Reload page, both halves of stroke persist correctly
-- ✓ Pan one panel, stroke halves visually separate (expected and documented)
-- ✓ Active canvas switch, correct spillover visible
-- ✓ All previous surfaces still work
+- ✓ Reload page, both halves of stroke persist correctly (verified via direct IndexedDB inspection — matching `strokeGroupId` on both segments, still aligned since neither camera moved)
+- ✓ Pan one panel, stroke halves visually separate (expected and documented) — verified: panned the canvas panel after drawing a cross-boundary stroke, PDF-side segment stayed fixed, canvas-side segment moved with the pan
+- ✓ Active canvas switch, correct spillover visible — verified: PDF-side segment hides when its tagged canvas isn't active, reshows when switched back
+- ✓ A same-panel drag that never crosses the boundary still draws normally with no regression
+- ✓ All previous surfaces still work (shared floating toolbar, camera lock, resizable split, direct markup all spot-checked)
 
-### 6. Polish (Future)
+**Verification note:** tldraw's IndexedDB persistence is debounced — reading the database within ~1 second of a drag can show stale/empty results even though the shapes exist correctly in the editor's in-memory store. Wait 1–2 seconds before trusting an empty read as a real failure (this produced several false negatives during this milestone's verification before being traced to timing, not a code bug).
+
+### 6. Polish (Next)
 
 **Deliverables:**
 - Export (PNG/PDF)

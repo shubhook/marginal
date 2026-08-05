@@ -238,8 +238,6 @@ Surface 3 (linked canvases, 2026-08-04) confirmed each canvas has its own transf
 
 What Surface 3 did **not** need, and what turned out to still be superseded by the Surface 2 approach: the functions in this file. PDF-side spillover (which of a page's linked canvases' PDF-side markup is currently visible) is implemented as tagged shapes living directly inside the *page's* own tldraw store — see [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3) — so page space and tldraw space stay identical by construction, the same way direct markup does. No `pdfToWorld`/`worldToPdf` calls were added.
 
-The first feature expected to actually need a transform between a Canvas's world space and the Page's PDF space is cross-layer drawing (next milestone): a single in-progress stroke that starts on the page and continues into a linked canvas's panel will need to convert the drag's screen coordinates into both spaces as it crosses the boundary, then store the two halves in their respective coordinate spaces (see [Data Model § Cross-Layer Strokes](./data-model.md#cross-layer-strokes-future)).
-
 ```typescript
 // Board transform
 const boardTransform = { offsetX: 0, offsetY: 0, zoom: 1 };
@@ -256,3 +254,18 @@ const canvasPoint = worldToPdf(mouseWorldPoint, canvasTransform);
 ```
 
 No changes needed to coordinate functions; just keep separate transforms per surface.
+
+## Cross-Layer Drawing: Resolving the Forward-Looking Note Above (2026-08-05)
+
+The note above anticipated cross-layer drawing would be the first feature to need a transform between a Canvas's world space and the Page's PDF space, via `pdfToWorld`/`worldToPdf`. It didn't, and deliberately wasn't extended to.
+
+**What actually happens:** the capture overlay (`app/components/CrossLayerCapture.tsx`) buffers raw screen points for the duration of a drag, then hands them to `app/components/crossLayerDrawing.ts`, which converts each side's points with that side's own tldraw editor's `editor.screenToPage(point)` — not this module's `screenToWorld`/`worldToPdf`.
+
+**Why not extend `coordinates.ts`:** this is the same call already made for the PDF page and for spillover (§ Multiple Canvas Spaces above) — once a surface is rendered by a real tldraw instance, tldraw's own camera *is* the Transform. `editor.screenToPage()` already reads that editor's tracked `screenBounds` and live `getCamera()` internally, correctly handling both sides of a cross-boundary drag with the same call:
+
+- **PDF side:** the page panel's camera is locked (fixed fit-to-page, see [Architecture § Camera Lock](./architecture.md#surface-3-fix-pass-ii--shared-capsule-camera-lock-header-alignment-2026-08-05)), so `screenToPage()` there is effectively a fixed, one-time transform — it can't have moved mid-drag.
+- **Canvas side:** the linked canvas's camera is live (pan/zoom), so `screenToPage()` there reads whatever the camera is at conversion time (pointer-up, after the full point list is buffered) — this is what produces the accepted pan/zoom-separation limitation, see [Architecture § Cross-Layer Drawing](./architecture.md#cross-layer-drawing-2026-08-05).
+
+Introducing a second, hand-rolled transform path (`pdfToWorld`/`worldToPdf`) alongside tldraw's own camera would mean two sources of truth for the same conversion — exactly the duplication § Common Mistakes above warns against. `coordinates.ts` remains reserved for conversions that happen *before* any tldraw instance exists for a surface (there are none yet in the shipped surfaces); it is not extended by this milestone.
+
+The one piece of new, isolated, testable math this milestone did need — where to split a buffered point list at the panel boundary — lives in `splitPointsAtDivider()` in `crossLayerDrawing.ts`, not in `coordinates.ts`, since it operates purely in screen space (a vertical x-coordinate split) and has no pan/zoom/PDF-space dependency at all.
