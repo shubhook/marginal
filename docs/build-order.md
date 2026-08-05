@@ -145,7 +145,7 @@ The coordinate-transform system underpins every later surface. If the math is wr
 - Stroke splitting at panel boundary after completion ✅ (`splitPointsAtDivider()` in `app/components/crossLayerDrawing.ts`)
 - Storage: two linked segments per cross-boundary stroke (shared strokeGroupId) — PDF-side segment as a `meta.canvasId`-tagged shape in the page's store (same mechanism as the Surface 3 test affordance), canvas-side segment in that canvas's own store ✅
 - Spillover rendering rule already enforced by Surface 3 (only active canvas spillover visible) — this milestone only needed to create correctly-tagged shapes, not rebuild visibility ✅ (verified: switching active canvas tab hides/reshows the PDF-side segment correctly, no new spillover code needed)
-- Known limitation: if either panel is panned/zoomed after a cross-boundary stroke, halves can separate (documented, not a bug to fix silently) ✅ (verified directly — see below)
+- ~~Known limitation: if either panel is panned/zoomed after a cross-boundary stroke, halves can separate~~ — **revised 2026-08-05, see Fix Pass below.** Originally accepted because only the PDF panel was camera-locked; once the linked-canvas panel was locked too, this limitation no longer applies and the note is removed rather than carried forward stale.
 
 **Data model changes:**
 - None (strokeGroupId already in schema; cross-layer strokes are two linked segments)
@@ -155,12 +155,23 @@ The coordinate-transform system underpins every later surface. If the math is wr
 **Acceptance Criteria:**
 - ✓ Draw a stroke starting on PDF page, drag into canvas panel, release → one continuous visible stroke
 - ✓ Reload page, both halves of stroke persist correctly (verified via direct IndexedDB inspection — matching `strokeGroupId` on both segments, still aligned since neither camera moved)
-- ✓ Pan one panel, stroke halves visually separate (expected and documented) — verified: panned the canvas panel after drawing a cross-boundary stroke, PDF-side segment stayed fixed, canvas-side segment moved with the pan
 - ✓ Active canvas switch, correct spillover visible — verified: PDF-side segment hides when its tagged canvas isn't active, reshows when switched back
 - ✓ A same-panel drag that never crosses the boundary still draws normally with no regression
 - ✓ All previous surfaces still work (shared floating toolbar, camera lock, resizable split, direct markup all spot-checked)
 
 **Verification note:** tldraw's IndexedDB persistence is debounced — reading the database within ~1 second of a drag can show stale/empty results even though the shapes exist correctly in the editor's in-memory store. Wait 1–2 seconds before trusting an empty read as a real failure (this produced several false negatives during this milestone's verification before being traced to timing, not a code bug).
+
+#### Fix Pass — Stuck Drag State (2026-08-05)
+
+Real (non-automated) use surfaced a drag-tracking bug that automated testing hadn't caught: `setPointerCapture` on the narrow capture strip could silently fail to keep delivering events once a drag left the strip, leaving the drag permanently "stuck" — visible as an unerasable scribble, and (since the drag never completed) preventing genuine crossings from ever getting tagged/split. Fixed by tracking drags with `window`-level pointer listeners instead of relying on the strip element. Full writeup: [Architecture § Fix Pass — Stuck Drag State & Untagged Segments](./architecture.md#fix-pass--stuck-drag-state--untagged-segments-2026-08-05).
+
+#### Fix Pass — Camera Lock Extended to the Linked-Canvas Panel (2026-08-05)
+
+The linked-canvas panel is now camera-locked the same way the PDF panel already was — `isLocked: true` in `RightPanel.tsx`'s `onMount`, no user-driven pan/wheel/pinch/keyboard zoom. Unlike the PDF panel, no `constraints` block is set (there's no fixed "page size" for an unbounded canvas to fit against); the camera is simply forced to `(0, 0, 1)` at mount and never allowed to move again. tldraw's own resize handling (verified via its source — `getConstrainedCamera` passes camera x/y/z through unchanged when `constraints` is absent) keeps this correct on window/divider resize for free, no manual refit code needed.
+
+With both panels' cameras permanently fixed, the previous milestone's accepted pan/zoom-separation limitation no longer applies — removed from the acceptance criteria above, not carried forward. See [Architecture § Camera Lock Extended](./architecture.md#fix-pass--camera-lock-extended-to-the-linked-canvas-panel-2026-08-05) for the full rationale, including why `constraints` was deliberately left out.
+
+**Spillover-swap bug reported alongside this:** investigated at length (both via the `addTestSpillover` test affordance and via real cross-layer strokes, single- and multi-canvas, forward and backward switching, and the canvas-creation flow) — could not reproduce on the current codebase. `applySpilloverVisibility`'s swap logic is correct and was exercised successfully in every scenario tried. The most likely explanation: the reported symptom was a downstream effect of the *previous* Fix Pass's stuck-drag bug (untagged strays from incomplete crossings are, correctly, always-visible — indistinguishable from "stale spillover" if that's what was on screen at the time), observed before that fix was picked up, or from stale pre-fix shapes left in the browser's own IndexedDB. No code change was needed or made for this specific report beyond the drag-tracking fix already shipped; if it recurs on fresh data after this pass, that's a new bug, not this one.
 
 ### 6. Polish (Next)
 

@@ -13,9 +13,16 @@
 // construction) or for spillover (same reason). The PDF panel and the linked
 // canvas are both real tldraw instances, so the natural continuation is
 // tldraw's own `editor.screenToPage()`, which already knows that editor's
-// screenBounds and live camera (correctly handling the PDF panel's *locked*
-// camera and the canvas panel's *live* pan/zoom with the same call) — see
-// docs/coordinates.md for the full note.
+// screenBounds and camera — see docs/coordinates.md for the full note.
+//
+// Both panels' cameras are locked (see RightPanel.tsx and PDFViewer.tsx's
+// PageMarkupEditor) — this used to matter here because the canvas side's
+// camera could move between draw-time and read-time, but a locked camera
+// can't move at all, so screenToPage() on either side is now just a fixed,
+// deterministic conversion. This is also why a cross-boundary stroke's two
+// segments can no longer visually separate after the fact — see
+// docs/architecture.md § Cross-Layer Drawing for the full history (this was
+// previously an accepted limitation, revised once both cameras were locked).
 import {
   DefaultColorStyle,
   DefaultDashStyle,
