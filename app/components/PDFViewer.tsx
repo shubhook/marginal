@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useValue } from "@tldraw/state-react";
 import {
   AssetRecordType,
   Box,
@@ -212,6 +213,42 @@ function PageShell({
       setActiveEditorVersion((v) => v + 1);
     }
   }, [activePanel, pageEditor, canvasEditor]);
+
+  // The PDF panel and the linked-canvas panel are two independent tldraw
+  // instances, each tracking its own current tool. Left alone, that means
+  // the shared Capsule (FloatingTldrawUi) appears to spontaneously change
+  // tool the instant the pointer crosses from one panel to the other — it's
+  // not changing, it's just now reading the *other* editor's independently-
+  // stale tool state. It also silently breaks cross-layer drawing: the
+  // capture strip (CrossLayerCapture) only intercepts pointer events while
+  // the active editor's tool is "draw", so if the panel the pointer is
+  // currently deemed "over" has drifted to some other tool, the strip stops
+  // rendering and a drag that should have been captured falls straight
+  // through to whichever panel is underneath instead, producing an ordinary
+  // in-panel stroke that stops dead at the panel edge.
+  //
+  // Fix: mirror tool changes across both editors. Each side only calls
+  // setCurrentTool when it's actually out of sync with the other, which
+  // both avoids redundant no-op calls and prevents the two effects below
+  // from feeding back into an infinite loop.
+  const pageToolId = useValue("page-tool-id", () => pageEditor?.getCurrentToolId() ?? null, [
+    pageEditor,
+  ]);
+  const canvasToolId = useValue(
+    "canvas-tool-id",
+    () => canvasEditor?.getCurrentToolId() ?? null,
+    [canvasEditor]
+  );
+
+  useEffect(() => {
+    if (!canvasEditor || !pageToolId || pageToolId === canvasToolId) return;
+    canvasEditor.setCurrentTool(pageToolId);
+  }, [pageToolId, canvasToolId, canvasEditor]);
+
+  useEffect(() => {
+    if (!pageEditor || !canvasToolId || canvasToolId === pageToolId) return;
+    pageEditor.setCurrentTool(canvasToolId);
+  }, [canvasToolId, pageToolId, pageEditor]);
 
   const handleActivate = async (canvasId: string) => {
     setActiveCanvasIdState(canvasId);
