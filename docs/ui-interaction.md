@@ -47,7 +47,7 @@ This is not a file browser. Use sidebar to switch context. Keyboard shortcuts (f
 - **Expanded** (default, 256px): the full notebook list — create, inline rename, delete — unchanged from before.
 - **Collapsed** (48px icon rail): three icon buttons — a toggle to re-expand, "+" to create a notebook, and a switcher (☰) that opens a floating popover listing every notebook by name to pick one to switch to.
 
-The switcher (☰) is available in **both** modes (also present in the expanded header, next to the collapse toggle) — it's a quick-jump popover, not exclusive to the collapsed rail. Clicking a notebook in it switches immediately and closes the popover; it closes on outside click or `Escape` too.
+**Fixed 2026-08-08:** the switcher (☰) is collapsed-mode only. It used to also render in the expanded header, next to the collapse toggle — redundant there, since the expanded sidebar already shows the full notebook list directly; the popover only earns its place when the list itself isn't on screen. Clicking a notebook in it switches immediately and closes the popover; it closes on outside click or `Escape` too.
 
 **Rationale:** built when Surface 3 put two panels on screen (PDF page + linked canvas) before the sidebar was even counted, competing directly with an always-expanded 256px sidebar on a laptop or tablet-sized viewport. The single-canvas migration (2026-08-07) later removed that second panel, but the collapsed rail is still worth keeping — screen space is still finite. The collapsed/expanded preference persists to `localStorage` (`marginal:sidebarCollapsed`) — pure UI state, not app data, not routed through `src/storage/db.ts`.
 
@@ -105,7 +105,7 @@ A PDF page is a single tldraw instance — the rendered page bitmap as a locked 
 
 ### Header Row
 
-One row above the canvas: page nav (‹ Prev · Page N/M · Next ›) left-aligned, canvas tabs right-aligned. No divider to line up with anymore — this is a plain header, not a split layout. (Layout decision made alongside the migration; if a different arrangement is wanted later, this is a one-file change in `PageShell`, `app/components/PDFViewer.tsx`.)
+One row above the canvas: page nav (‹ Prev · Page N/M · Next ›) left-aligned, canvas tabs right-aligned, followed by the export controls (see [Export](#export) below) — same row, no divider to line up with anymore, since this is a plain header, not a split layout. (Layout decision made alongside the migration; if a different arrangement is wanted later, this is a one-file change in `PageShell`, `app/components/PDFViewer.tsx`.)
 
 ### Canvas Tabs
 
@@ -120,7 +120,20 @@ Canvas tabs live in that header row, not a side panel:
 
 Every PDF page and every Board now mounts a single, ordinary `<Tldraw>` instance with its stock UI showing (no `hideUi`, no externally-mounted toolbar) — the two-panel-era problem of "two tldraw instances both wanting to show their own chrome" doesn't exist anymore, since there's only ever one instance per surface.
 
-Visual styling is still stock tldraw, not STYLING.md §5's custom floating pill — that visual treatment remains a genuine Polish-phase task.
+Visual styling is still stock tldraw, not STYLING.md §5's custom floating pill — that visual treatment remains a genuine Polish-phase task (the one Polish deliverable still deferred — see [build-order.md](./build-order.md)).
+
+## Export
+
+Added in the Polish milestone (`app/components/export.ts`, `app/components/pdfExport.ts`, `app/components/ExportMenu.tsx`). All client-side — no server round-trip, per AGENTS.md § 1.
+
+- **Board:** an "Export" control in the Board's own header row (above the canvas, added by `Editor.tsx`) offers PNG or SVG via tldraw's own `exportAs`, covering every shape on the board (auto-trimmed to content bounds — a Board has no fixed page size to bound against).
+- **PDF page:** an "Export page" control in the page header (`PageShell`) offers PNG or SVG of that page only — the rendered PDF background plus the *currently-visible* canvas's ink (tag-based visibility, same shapes the user sees on screen), bounded explicitly to the page's own PDF-point dimensions rather than auto-trimmed, since canvas ink can extend anywhere on the shared infinite canvas.
+- **Full PDF document:** an "Export PDF" control in the same page header reassembles every page of the PDFDocument into one downloadable PDF (pdf-lib), each page baked with whatever canvas was active on it — including pages not currently open, rendered headlessly by briefly mounting a throwaway, off-screen `<Tldraw>` instance against that page's real `persistenceKey` (same store, so the same tag-based visibility already applies) and rasterizing it to PNG before embedding.
+- The style-format popover (PNG/SVG) is a small custom component (`ExportMenu`) — this is app chrome, not a restyle of tldraw's own toolbar/style panel, which stay stock per the Polish scope boundary.
+
+## Search
+
+Added in the Polish milestone. Name-only, across Notebooks, Boards, and PDFDocuments — not a content search (searching inside board/page ink would mean digging into tldraw stores per item, meaningfully harder and out of scope). Bound to **Cmd+K**, opens a centered palette (`SearchPalette.tsx`, mounted at the `AppContainer` level so it can jump across notebooks): debounced text input, results grouped by type, click or Enter jumps straight to that Notebook/Board/PDF. Deliberately separate from the Sidebar's collapsed-rail switcher (§ Sidebar Behavior), which stays a simple, mouse-driven, notebook-only affordance.
 
 ## Empty States
 
@@ -141,21 +154,41 @@ Opens directly in infinite canvas. Default name: "Untitled Board — Aug 4", ren
 
 Auto-creates Canvas 0 as active. No intermediate steps.
 
-## Keyboard Shortcuts (v1 Baseline)
+## Keyboard Shortcuts (Final — Polish Milestone)
 
-| Key | Action | Mode |
+**Revised 2026-08-08 (Polish milestone):** the original v1 baseline table below was drafted before checking tldraw's actual bindings and got two of them wrong — there is no native `p` shortcut at all (the freehand tool is `d`/`b`/`x`, not `p`), and `h` is the hand/pan tool, not a highlighter (highlight is `shift+d`). This table reflects what tldraw 5.2.5 actually binds (confirmed against `node_modules/tldraw/src/lib/ui/hooks/useTools.tsx` and `useKeyboardShortcuts.ts`), plus every app-specific shortcut added in Polish. All app-specific shortcuts were chosen to avoid colliding with a tldraw native — verified by checking exact modifier combinations, not just the bare key, since a modified and unmodified version of the same key are different bindings.
+
+**Native, from tldraw (unchanged by us):**
+
+| Key | Action |
+|-----|--------|
+| `v` | Select tool |
+| `h` | Hand (pan) tool |
+| `e` | Eraser tool |
+| `d`, `b`, or `x` | Draw (freehand/pen) tool |
+| `r` | Rectangle |
+| `o` | Ellipse |
+| `a` | Arrow |
+| `l` | Line |
+| `f` | Frame |
+| `t` | Text tool |
+| `n` | Note (sticky) |
+| `k` | Laser pointer |
+| `shift+d` | Highlight |
+| `cmd+u` | Insert media |
+| `cmd+z` | Undo |
+| `cmd+shift+z` | Redo |
+
+**App-specific, added in Polish (`app/components/keyboardShortcuts.ts` + per-component effects):**
+
+| Key | Action | Collision check |
 |-----|--------|------|
-| `v` | Select tool | Canvas/PDF |
-| `p` | Pen tool | Canvas/PDF |
-| `r` | Rectangle | Canvas/PDF |
-| `t` | Text tool | Canvas/PDF |
-| `e` | Eraser | Canvas/PDF |
-| `h` | Highlighter | PDF only |
-| `Cmd+B` | Toggle sidebar | Always (future) |
-| `Cmd+Z` | Undo | Canvas/PDF |
-| `Cmd+Shift+Z` | Redo | Canvas/PDF |
+| `Cmd+B` | Toggle sidebar collapse | tldraw only binds plain `b` (draw tool alias) — a modified `cmd+b` is untouched |
+| `Cmd+[` / `Cmd+]` | Previous / next PDF page | tldraw only binds plain `[`/`]` and `alt+[`/`alt+]` (shape reordering) |
+| `Cmd+Shift+[` / `Cmd+Shift+]` | Previous / next canvas tab | tldraw has no `shift+bracket` binding at all |
+| `Cmd+K` | Open search palette | tldraw only binds plain `k` (laser pointer) |
 
-Extend as usage reveals friction (e.g., quick switcher `Cmd+K`).
+All four are guarded against firing while typing into a text field (renaming a notebook/board/canvas, editing the search query) via `isTypingTarget` — same guard shape as tldraw's own `shouldSkipEvent`. `Cmd+K` is the one exception, deliberately: like most apps' quick-open shortcuts, it fires even while another input has focus.
 
 ## Drag & Drop (Future)
 

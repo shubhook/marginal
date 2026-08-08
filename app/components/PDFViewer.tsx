@@ -11,11 +11,12 @@ import {
   type TLShapeId,
 } from "tldraw";
 import "tldraw/tldraw.css";
-import type { Canvas, Page } from "@/src/storage/types";
+import type { Canvas, Page, PDFDocument } from "@/src/storage/types";
 import {
   createCanvasAndActivate,
   deleteCanvas,
   getCanvasesByPage,
+  getPDFDocument,
   getPage,
   getPagesByPDF,
   setActiveCanvas,
@@ -23,13 +24,19 @@ import {
 } from "@/src/storage/db";
 import { renderPageBitmap } from "@/src/pdf/renderer";
 import { applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
+import { cameraToRestore, tagShapeMeta, withSavedCamera, type CameraSnapshot } from "./canvasState";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
+import { exportPage } from "./export";
+import { exportPDFDocument } from "./pdfExport";
+import { ExportMenu } from "./ExportMenu";
+import { isModKey, isTypingTarget } from "./keyboardShortcuts";
 
 interface PDFViewerProps {
   pdfDocumentId: string;
 }
 
 export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
+  const [pdfDocument, setPdfDocument] = useState<PDFDocument | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
   const [pageIndex, setPageIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -38,9 +45,11 @@ export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
     let cancelled = false;
     setIsLoading(true);
     setPageIndex(0);
-    getPagesByPDF(pdfDocumentId)
-      .then((loaded) => {
-        if (!cancelled) setPages(loaded);
+    Promise.all([getPDFDocument(pdfDocumentId), getPagesByPDF(pdfDocumentId)])
+      .then(([loadedDoc, loadedPages]) => {
+        if (cancelled) return;
+        setPdfDocument(loadedDoc ?? null);
+        setPages(loadedPages);
       })
       .catch((error) => {
         console.error("Failed to load PDF pages:", error);
@@ -52,6 +61,28 @@ export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
       cancelled = true;
     };
   }, [pdfDocumentId]);
+
+  const goPrev = () => setPageIndex((i) => Math.max(0, i - 1));
+  const goNext = () => setPageIndex((i) => Math.min(pages.length - 1, i + 1));
+
+  // Cmd+[ / Cmd+] — page navigation. Confirmed collision-free against
+  // tldraw's own bindings: tldraw only uses plain `[`/`]` and `alt+[`/`alt+]`
+  // (shape reordering) — see docs/ui-interaction.md § Keyboard Shortcuts.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (!isModKey(e) || e.shiftKey || e.altKey) return;
+      if (e.key === "[") {
+        e.preventDefault();
+        goPrev();
+      } else if (e.key === "]") {
+        e.preventDefault();
+        goNext();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [pages.length]);
 
   if (isLoading) {
     return (
@@ -75,25 +106,27 @@ export function PDFViewer({ pdfDocumentId }: PDFViewerProps) {
     <PageShell
       key={page.id}
       page={page}
+      pages={pages}
+      pdfDocument={pdfDocument}
       pdfDocumentId={pdfDocumentId}
       pageIndex={pageIndex}
       totalPages={pages.length}
-      onPrevPage={() => setPageIndex((i) => Math.max(0, i - 1))}
-      onNextPage={() => setPageIndex((i) => Math.min(pages.length - 1, i + 1))}
+      onPrevPage={goPrev}
+      onNextPage={goNext}
     />
   );
 }
 
 interface PageShellProps {
   page: Page;
+  pages: Page[];
+  pdfDocument: PDFDocument | null;
   pdfDocumentId: string;
   pageIndex: number;
   totalPages: number;
   onPrevPage: () => void;
   onNextPage: () => void;
 }
-
-type CameraSnapshot = { x: number; y: number; z: number };
 
 // Owns everything scoped to a single page: the single shared tldraw
 // instance (direct markup + every linked canvas's shapes, tag-based — see
@@ -102,6 +135,8 @@ type CameraSnapshot = { x: number; y: number; z: number };
 // Page.activeCanvasId).
 function PageShell({
   page,
+  pages,
+  pdfDocument,
   pdfDocumentId,
   pageIndex,
   totalPages,
@@ -150,10 +185,10 @@ function PageShell({
   // unmount/editor change via the returned callback.
   useEffect(() => {
     if (!pageEditor) return;
-    return pageEditor.sideEffects.registerBeforeCreateHandler("shape", (shape) => {
-      if (shape.meta && "canvasId" in shape.meta) return shape;
-      return { ...shape, meta: { ...shape.meta, canvasId: activeCanvasIdRef.current } };
-    });
+    return pageEditor.sideEffects.registerBeforeCreateHandler("shape", (shape) => ({
+      ...shape,
+      meta: tagShapeMeta(shape.meta, activeCanvasIdRef.current) as typeof shape.meta,
+    }));
   }, [pageEditor]);
 
   // Persists the outgoing canvas's current camera position (both locally,
@@ -164,9 +199,7 @@ function PageShell({
     if (!pageEditor || !prevCanvasId) return;
     const camera = pageEditor.getCamera();
     const snapshot: CameraSnapshot = { x: camera.x, y: camera.y, z: camera.z };
-    setCanvases((cs) =>
-      cs.map((c) => (c.id === prevCanvasId ? { ...c, lastCameraPosition: snapshot } : c))
-    );
+    setCanvases((cs) => withSavedCamera(cs, prevCanvasId, snapshot));
     updateCanvas(prevCanvasId, { lastCameraPosition: snapshot }).catch((error) =>
       console.error("Failed to save canvas camera position:", error)
     );
@@ -176,11 +209,9 @@ function PageShell({
   // this canvas has never been active before — leave the camera wherever
   // it currently is, per data-model.md § Canvas.
   const restoreCanvasCamera = (canvasList: Canvas[], canvasId: string | null) => {
-    if (!pageEditor || !canvasId) return;
-    const target = canvasList.find((c) => c.id === canvasId);
-    if (target?.lastCameraPosition) {
-      pageEditor.setCamera(target.lastCameraPosition);
-    }
+    if (!pageEditor) return;
+    const camera = cameraToRestore(canvasList, canvasId);
+    if (camera) pageEditor.setCamera(camera);
   };
 
   const handleActivate = (canvasId: string) => {
@@ -232,6 +263,54 @@ function PageShell({
     }
   };
 
+  const cycleCanvas = (direction: 1 | -1) => {
+    if (canvases.length <= 1) return;
+    const currentIndex = canvases.findIndex((c) => c.id === activeCanvasId);
+    const nextIndex =
+      (currentIndex === -1 ? 0 : currentIndex + direction + canvases.length) % canvases.length;
+    handleActivate(canvases[nextIndex].id);
+  };
+
+  // Cmd+Shift+[ / Cmd+Shift+] — canvas tab switching. Confirmed
+  // collision-free: tldraw has no shift+bracket bindings at all (only plain
+  // and alt+ variants) — see docs/ui-interaction.md § Keyboard Shortcuts.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (!isModKey(e) || !e.shiftKey || e.altKey) return;
+      if (e.key === "[" || e.key === "{") {
+        e.preventDefault();
+        cycleCanvas(-1);
+      } else if (e.key === "]" || e.key === "}") {
+        e.preventDefault();
+        cycleCanvas(1);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canvases, activeCanvasId]);
+
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(
+    null
+  );
+
+  const handleExportPdfDocument = async () => {
+    if (!pdfDocument) return;
+    setIsExportingPdf(true);
+    setExportProgress({ done: 0, total: pages.length });
+    try {
+      await exportPDFDocument(pdfDocument, pages, (done, total) =>
+        setExportProgress({ done, total })
+      );
+    } catch (error) {
+      console.error("Failed to export PDF document:", error);
+    } finally {
+      setIsExportingPdf(false);
+      setExportProgress(null);
+    }
+  };
+
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden">
       {/* Header row: PDF page nav (left) + canvas tabs (right), single row —
@@ -266,6 +345,24 @@ function PageShell({
           onRename={handleRename}
           onDelete={handleDelete}
         />
+        <div className="flex items-center gap-1 pl-3 ml-1 border-l border-[#2a2a2a] shrink-0">
+          {pageEditor && (
+            <ExportMenu
+              label="Export page"
+              onExport={(format) => exportPage(pageEditor, page, format)}
+            />
+          )}
+          <button
+            onClick={handleExportPdfDocument}
+            disabled={!pdfDocument || isExportingPdf}
+            className="px-2 py-1 text-xs text-[#8a8a8a] hover:text-[#f0f0f0] disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap"
+            title="Export the whole PDF, each page baked with its currently-active canvas's ink"
+          >
+            {isExportingPdf
+              ? `Exporting ${exportProgress?.done ?? 0}/${exportProgress?.total ?? totalPages}...`
+              : "Export PDF"}
+          </button>
+        </div>
       </div>
 
       {/* Single shared tldraw instance: PDF background, direct markup, and
@@ -425,7 +522,7 @@ function PageMarkupEditor({ page, pdfDocumentId, onEditorMount }: PageMarkupEdit
   );
 }
 
-async function ensurePageBackground(
+export async function ensurePageBackground(
   editor: Editor,
   page: Page,
   pdfDocumentId: string

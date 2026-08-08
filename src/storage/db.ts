@@ -57,7 +57,7 @@ export const db = new MarginalDB();
 // **not** migrated into the shared page store — flagged per build-order.md §
 // Single Canvas Migration rather than attempting a complex data transform on
 // pre-MVP dev data.
-const TLDRAW_DB_PREFIX = "TLDRAW_DOCUMENT_v2";
+export const TLDRAW_DB_PREFIX = "TLDRAW_DOCUMENT_v2";
 
 export function deleteTldrawData(persistenceKey: string): Promise<void> {
   return new Promise((resolve) => {
@@ -426,4 +426,62 @@ export async function deleteCanvas(id: string): Promise<void> {
   });
 
   await deleteTldrawData(`canvas-${id}`);
+}
+
+// One-time manual cleanup utility — not run automatically on app load. Per
+// build-order.md § Single Canvas Migration: pre-migration `canvas-${id}`
+// tldraw stores were left in place rather than content-migrated into the
+// shared page store, orphaned unless that Canvas row happened to later be
+// deleted (which cleans up its own store as a side effect of deleteCanvas
+// above). This finds every `canvas-${id}` store with no matching row left
+// in the `canvases` table and removes it. Idempotent — safe to run more
+// than once; a second run just finds nothing left to do. Returns the
+// canvas ids whose stores were removed, for logging/verification.
+export async function cleanupOrphanedCanvasStores(): Promise<string[]> {
+  if (typeof indexedDB.databases !== "function") {
+    throw new Error(
+      "indexedDB.databases() isn't available in this browser — can't enumerate stores to clean up."
+    );
+  }
+
+  const canvasStorePrefix = `${TLDRAW_DB_PREFIX}canvas-`;
+  const [databases, liveCanvases] = await Promise.all([indexedDB.databases(), db.canvases.toArray()]);
+  const liveCanvasIds = new Set(liveCanvases.map((c) => c.id));
+
+  const removed: string[] = [];
+  for (const { name } of databases) {
+    if (!name || !name.startsWith(canvasStorePrefix)) continue;
+    const canvasId = name.slice(canvasStorePrefix.length);
+    if (liveCanvasIds.has(canvasId)) continue; // still a real Canvas — not orphaned
+    await deleteTldrawData(`canvas-${canvasId}`);
+    removed.push(canvasId);
+  }
+  return removed;
+}
+
+// Name-only search across Notebooks, Boards, and PDFDocuments — deliberately
+// not a content search (that would mean digging into tldraw stores per
+// board/page, meaningfully harder and out of scope for the Polish
+// milestone — see docs/ui-interaction.md § Search). Reasonable for v1's
+// data volume: reads each table fully and filters in memory rather than
+// building a dedicated search index.
+export interface SearchResults {
+  notebooks: Notebook[];
+  boards: Board[];
+  pdfs: PDFDocument[];
+}
+
+export async function searchAll(query: string): Promise<SearchResults> {
+  const q = query.trim().toLowerCase();
+  if (!q) return { notebooks: [], boards: [], pdfs: [] };
+  const [notebooks, boards, pdfs] = await Promise.all([
+    db.notebooks.toArray(),
+    db.boards.toArray(),
+    db.pdfDocuments.toArray(),
+  ]);
+  return {
+    notebooks: notebooks.filter((n) => n.name.toLowerCase().includes(q)),
+    boards: boards.filter((b) => b.name.toLowerCase().includes(q)),
+    pdfs: pdfs.filter((p) => p.name.toLowerCase().includes(q)),
+  };
 }

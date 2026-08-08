@@ -5,6 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { NotebookContents, type NotebookItemRef } from "./NotebookContents";
 import { Editor } from "./Editor";
 import { PDFViewer } from "./PDFViewer";
+import { SearchPalette } from "./SearchPalette";
 
 export function AppContainer() {
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
@@ -76,6 +77,13 @@ export function AppContainer() {
           </div>
         )}
       </main>
+      <SearchPalette
+        onJumpToNotebook={(notebookId) => handleSelectNotebook(notebookId)}
+        onJumpToItem={(notebookId, item) => {
+          setActiveNotebookId(notebookId);
+          setActiveItem(item);
+        }}
+      />
     </div>
   );
 }

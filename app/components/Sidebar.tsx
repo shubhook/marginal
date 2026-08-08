@@ -9,6 +9,7 @@ import {
   deleteNotebook,
 } from "@/src/storage/db";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
+import { isModKey, isTypingTarget } from "./keyboardShortcuts";
 
 interface SidebarProps {
   onSelectNotebook?: (notebookId: string | null) => void;
@@ -76,6 +77,22 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
       return next;
     });
   };
+
+  // Cmd+B — toggle sidebar collapse. Confirmed collision-free: tldraw only
+  // binds plain `b` (draw tool) and `cmd+b` is otherwise unused — see
+  // docs/ui-interaction.md § Keyboard Shortcuts.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (!isModKey(e) || e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleCollapsed();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const handleCreateNotebook = async () => {
     try {
@@ -211,26 +228,13 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
       <div className="p-4 border-b border-[#2a2a2a]">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-[#f0f0f0] font-semibold text-sm">Notebooks</h1>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setSwitcherOpen((o) => !o)}
-              title="Switch notebook"
-              className={`w-6 h-6 flex items-center justify-center rounded text-xs ${
-                switcherOpen
-                  ? "bg-[#2a2a2a] text-[#f0f0f0]"
-                  : "text-[#8a8a8a] hover:text-[#f0f0f0] hover:bg-[#252525]"
-              }`}
-            >
-              ☰
-            </button>
-            <button
-              onClick={toggleCollapsed}
-              title="Collapse sidebar"
-              className="w-6 h-6 flex items-center justify-center rounded text-[#8a8a8a] hover:text-[#f0f0f0] hover:bg-[#252525] text-xs"
-            >
-              «
-            </button>
-          </div>
+          <button
+            onClick={toggleCollapsed}
+            title="Collapse sidebar"
+            className="w-6 h-6 flex items-center justify-center rounded text-[#8a8a8a] hover:text-[#f0f0f0] hover:bg-[#252525] text-xs"
+          >
+            «
+          </button>
         </div>
         <button
           onClick={handleCreateNotebook}
@@ -239,7 +243,6 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
           + New Notebook
         </button>
       </div>
-      {switcherPopover}
 
       {/* Notebook list */}
       <div className="flex-1 overflow-y-auto">

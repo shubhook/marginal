@@ -192,21 +192,57 @@ See [Architecture](./architecture.md) — the Coordinate Spaces, Component Tree,
 
 **Schema change:** `Canvas.lastCameraPosition: {x, y, z} | null` (Dexie **version 3**) — replaces the removed per-canvas camera (each canvas used to have its own persisted tldraw camera by virtue of being its own store; the shared store needs an explicit field to remember where each canvas's "view" was). Null until a canvas has ever been active. See [Data Model § Canvas](./data-model.md#canvas).
 
-**Data migration note:** pre-existing `canvas-${id}` tldraw stores (dev data from before this migration) are **not** migrated into the shared page store — their content is orphaned (harmless-but-invisible, cleaned up automatically if that canvas is later deleted). Acceptable for pre-MVP dev data; flagged here rather than attempting a complex transform.
+**Data migration note — ✅ resolved 2026-08-08 (Stabilization Pass):** pre-existing `canvas-${id}` tldraw stores (dev data from before this migration) are **not** migrated into the shared page store — their content is orphaned only once the owning Canvas row itself is deleted (until then it's inaccessible-but-harmless, still nominally "owned"). `cleanupOrphanedCanvasStores()` (`src/storage/db.ts`) is a one-time manual utility — not run automatically — that finds every `canvas-${id}` store with no matching row left in the `canvases` table and removes it; idempotent, unit-tested against fake-indexeddb (`src/storage/db.test.ts`). Run once against this machine's real dev data (via browser console, mirroring the function's logic exactly): **zero stores were orphaned by that definition** — every `canvas-${id}` store still had a live Canvas row (none of those canvases had been deleted since the migration), so there was nothing to remove. The utility remains in the codebase for whenever an actual orphan does turn up (e.g. after deleting an old canvas).
 
 **Verification (2026-08-07):** via browser automation, against real persisted dev data (not a fresh fixture) — confirmed a single tldraw instance with native stock UI (no more `hideUi`, no split, no corner button); created a second canvas tab, drew a shape on it, confirmed it hides when switching to the other tab and reappears when switching back, with no ghost selection outline left behind (a cosmetic issue found and fixed during this pass — canvas switching now calls `editor.selectNone()`); confirmed free pan/zoom (no camera lock) and that each canvas's camera position is saved on switch-away and restored on switch-back; drew a stroke starting over the PDF content and continuing well past where the old panel divider used to sit — rendered as one ordinary shape, no seam, no special handling; reloaded the page and confirmed both canvases, the active tab, the tagged shapes' visibility, and both canvases' camera positions all persisted correctly; regression-checked Boards (Surface 1) — still works, unaffected. `bunx tsc --noEmit` and `bun run build` both clean; all 12 `coordinates.test.ts` tests still pass.
 
-### 6. Polish (Next)
+### Stabilization Pass ✅ (Complete — 2026-08-08)
+
+**Purpose:** the migration above was verified manually (browser automation) but had no unit test coverage of its own, and left one flagged loose end (orphaned `canvas-${id}` stores). This pass hardens what already shipped — no feature changes.
+
+**Pure logic extracted for testability (`app/components/canvasState.ts`):** the tag-visibility, auto-tagging, and camera save/restore mechanisms were previously entangled with `PDFViewer.tsx`'s component state and `spillover.ts`'s direct Editor calls, making them untestable without a real tldraw Editor. Following the same "isolate pure logic" principle `src/canvas/coordinates.ts` already established: `tagShapeMeta`, `computeVisibilityUpdates`, `idsTaggedWithCanvas`, `withSavedCamera`, and `cameraToRestore` are now plain functions over plain data (shape snapshots, `Canvas[]`, camera objects) with no tldraw or React dependency. `spillover.ts`'s `applySpilloverVisibility`/`removeSpilloverForCanvas` and `PDFViewer.tsx`'s `savePreviousCanvasCamera`/`restoreCanvasCamera`/the `beforeCreate` hook are now thin wrappers: read shapes/camera off the real Editor, call the pure function, apply the result. No behavior change — same decisions, just testable in isolation now.
+
+**Unit tests added:**
+- `app/components/canvasState.test.ts` — 20 tests (bun:test) covering tagging (a shape drawn while canvas A is active gets A's id, switching to B tags with B's id, an explicit sentinel/preserved tag is left alone), visibility (only the active canvas's shapes plus the background are shown, switching hides the old and shows the new, already-correct shapes produce no redundant update), and camera save/restore (including the first-visit case explicitly: a `null` `lastCameraPosition` returns `null` — leave the camera as-is, not a default/origin jump).
+- `src/storage/db.test.ts` — 11 tests (bun:test + [fake-indexeddb](https://www.npmjs.com/package/fake-indexeddb), not real browser IndexedDB) covering `deleteNotebook`/`deletePDFDocument`/`deletePage` cascades (zero orphaned rows and zero orphaned tldraw stores after each, siblings left untouched), `deleteCanvas`'s last-canvas guard and next-lowest-order-sibling reassignment, and `cleanupOrphanedCanvasStores` (below).
+- Test infra: `fake-indexeddb` + `@types/bun` added as dev dependencies; `bunfig.toml` added with `[test] preload = ["fake-indexeddb/auto"]` — required because Dexie caches `indexedDB` off the global at *module-load time* of the `dexie` package itself, not per-`Dexie()`-instance, so a plain top-of-test-file `import "fake-indexeddb/auto"` intermittently evaluated too late and failed with `DexieError: IndexedDB API missing`; preloading it before any test file's imports resolve this deterministically.
+
+**Orphaned `canvas-${id}` store cleanup:** see the resolved data-migration note above — `cleanupOrphanedCanvasStores()` added, unit-tested, and run once against this machine's real dev data (found zero actual orphans; every existing `canvas-${id}` store still had a live Canvas row).
+
+**Verification:** `bunx tsc --noEmit` and `bun run build` both clean; `bun test` — 12 (coordinates, pre-existing) + 20 (canvasState) + 11 (db) = 43 assertions/tests across 3 files, all passing. No feature/UI changes in this pass.
+
+### 6. Polish (2026-08-08)
 
 **Deliverables:**
-- Export (PNG/PDF)
-- Enhanced keyboard shortcuts (quick notebook switcher, page nav, etc.)
-- Search across notebooks/boards/pages
-- Performance optimization
-- Edge case handling
+- Export (PNG/PDF) ✅
+- Enhanced keyboard shortcuts (quick notebook switcher, page nav, etc.) ✅
+- Search across notebooks/boards/pages ✅ (name-only, per scope decision below)
+- Performance optimization — not addressed this pass, no known issue prompting it
+- Edge case handling — covered incidentally by the above (see Verification); no separate pass
 
-**Acceptance Criteria:**
-- TBD per Polish phase
+**Scope boundary (explicit, going in):** no restyle of tldraw's stock toolbar/style panel in this pass — that remains the one deferred cosmetic task (STYLING.md §5's custom floating pill), tracked since Surface 1/2/3 (see § Toolbar & Style Panel notes above). "Search across notebooks/boards/pages" was narrowed to *name-only* — content search (inside board/page ink) would mean digging into tldraw stores per item and is meaningfully harder; out of scope here.
+
+**Export** (`app/components/export.ts`, `app/components/pdfExport.ts`, `app/components/ExportMenu.tsx`) — all client-side, no server round-trip:
+- Board: PNG/SVG via tldraw's own `exportAs` (checked the installed 5.2.5 API directly rather than assuming — `exportAs`, `editor.toImageDataUrl`, `editor.getSvgString`, their real `TLSvgExportOptions`/`TLImageExportOptions` shapes), auto-trimmed to content bounds.
+- PDF page: PNG/SVG of the rendered background plus only the *currently-visible* canvas's ink (tag-based visibility, same `opacity !== 0` shapes the user sees), bounded explicitly to the page's PDF-point dimensions rather than auto-trimmed — canvas ink can extend anywhere on the shared infinite canvas post-migration, so auto-trim would make export size depend on stray marks.
+- Full PDFDocument: every page reassembled into one PDF via [pdf-lib](https://www.npmjs.com/package/pdf-lib) (added as a dependency), each page baked with whichever canvas was active on it. Pages not currently open are rendered headlessly by briefly mounting a throwaway, off-screen `<Tldraw>` against that page's real `persistenceKey` — same store, so the same tag-based visibility already applies — then rasterizing to PNG before embedding.
+
+**Keyboard shortcuts** (`app/components/keyboardShortcuts.ts` + per-component effects) — see [ui-interaction.md § Keyboard Shortcuts](./ui-interaction.md#keyboard-shortcuts-final--polish-milestone) for the full final table. The original v1 baseline table (`p` for pen, `h` for highlighter) turned out to be wrong when checked against tldraw's actual bindings — there is no native `p` shortcut (freehand is `d`/`b`/`x`) and `h` is the hand tool, not a highlighter (`shift+d` is). Four app-specific shortcuts added, each checked against tldraw's real bindings for exact-modifier collisions before picking it: `Cmd+B` (toggle sidebar), `Cmd+[`/`Cmd+]` (page nav), `Cmd+Shift+[`/`Cmd+Shift+]` (canvas tab switching), `Cmd+K` (search palette).
+
+**Search** (`searchAll()` in `src/storage/db.ts`, `app/components/SearchPalette.tsx`) — name-only match across Notebooks/Boards/PDFDocuments, reading each table fully and filtering in memory (reasonable at v1's data volume; no dedicated index). Bound to `Cmd+K`, mounted at `AppContainer` so results can jump across notebooks. Kept deliberately separate from the Sidebar's existing collapsed-rail notebook switcher (mouse-only, notebook-only) rather than merging the two.
+
+**Verification performed:**
+- Board PNG/SVG export triggered via the new header control with no console errors; dropdown initially rendered *underneath* tldraw's own style panel (both are `z-index`-positioned UI, tldraw's panel sits inside a `z-index: 300` stacking context) — fixed by giving the export dropdown an explicit `z-[9999]`.
+- PDF page export and full-PDFDocument export both triggered with no console errors or hangs (the "Exporting…" button state cleared normally); the browser-automation profile used for this verification pass doesn't expose its downloads directory to the filesystem, so the actual output files weren't independently opened and pixel-checked — a manual spot check of the downloaded PNG/PDF content is still worth doing before treating this as fully closed out.
+- `Cmd+B` toggles the sidebar; `Cmd+Shift+[`/`Cmd+Shift+]` correctly cycles the active canvas tab; `Cmd+K` opens the search palette, name search returns partial/case-insensitive matches grouped by type, and clicking a result jumps across notebooks correctly (verified: searching "gen" while inside one notebook's PDF jumped to a same-named PDF living in a *different* notebook, switching the active notebook too).
+- Re-confirmed `p` has no native binding and pressing it is a no-op (matches the corrected shortcut table, not a regression) — a shape-tool key overlap (`v`/select) is unaffected by any new shortcut, since every new binding requires a modifier tldraw's own bindings don't use.
+- Regression: `bunx tsc --noEmit` and `bun run build` both clean; `bun test` all passing (coordinates + canvasState + db suites, unchanged by this pass — no new unit tests added, since Polish's additions are UI/export plumbing rather than pure logic).
+
+**Not done, tracked as remaining:**
+- Custom toolbar/style-panel styling (STYLING.md §5) — explicitly out of scope for this pass, only remaining pre-v1 cosmetic item.
+- Independent pixel-level check of exported PNG/SVG/PDF file contents (blocked on this session's browser-automation sandbox not surfacing downloaded files — see Verification above).
+
+**Acceptance criteria:** export respects tag-based visibility, every new shortcut is collision-free against tldraw's real native bindings, name search + jump-to works, no regressions — all met per Verification above.
 
 ## Branching & Commits
 

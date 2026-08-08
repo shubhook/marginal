@@ -1,0 +1,6 @@
+[test]
+# fake-indexeddb must be installed before Dexie's module evaluates (Dexie
+# caches `indexedDB` off the global at module-load time, not per-instance —
+# see src/storage/db.test.ts's top comment). Preloading it here guarantees
+# that regardless of which test file imports "dexie" first.
+preload = ["fake-indexeddb/auto"]
