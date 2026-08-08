@@ -53,16 +53,17 @@ Notebook (flat container)
 **Key invariants:**
 - A Notebook has no nesting (flat by design, not a bug)
 - Every Page auto-creates Canvas 0 as active (no null state)
-- Cross-layer strokes store two linked segments with shared `strokeGroupId`
+- A stroke drawn across what used to be the panel boundary is now one ordinary shape — no linked segments, no `strokeGroupId` (see [Data Model § Cross-Layer Strokes](./data-model.md#cross-layer-strokes-removed-2026-08-07))
 
 ## Coordinate Spaces
 
-Three independent coordinate systems, each with its own transforms:
+PDF-page space and tldraw space are identical by construction (Surface 2 decision, unchanged) — the PDF bitmap is embedded directly into the page's own tldraw store at (0,0) in native page-point dimensions, so a stroke at tldraw (x, y) is at PDF point (x, y) with no transform in between.
+
+With the single-canvas-per-page migration (see [build-order.md § Single Canvas Migration](./build-order.md#single-canvas-migration)), there is now only one such space per page — no separate per-canvas coordinate space, and therefore no transform between canvases, because there is only one shared camera:
 
 | Space | Use | Dimensions | Transform |
 |-------|-----|------------|-----------|
-| **PDF-page** | Source PDF pages | Fixed (e.g., 612×792) | None; fixed origin |
-| **Canvas/World** | Pan/zoom on a single surface | Infinite | `offsetX/Y` + `zoom` |
+| **PDF-page / tldraw page** | Page content — direct markup and every linked canvas's shapes | Fixed (e.g., 612×792) | None; identical by construction |
 | **Screen** | Browser viewport | Variable | Element offset on page |
 
 **Conversions:** Always go through pure functions (`pdfToWorld`, `worldToPdf`, `screenToWorld`, etc.) defined in `src/canvas/coordinates.ts`. Never inline coordinate math into event handlers.
@@ -119,19 +120,18 @@ RootLayout
          │        stock tldraw UI — not affected by the PDF-panel work below)
          └── (PDF open) → PDFViewer
               └── PageShell (one per page, keyed by pageId)
-                   ├── unified header row (page nav left, canvas tabs right)
-                   ├── PageMarkupEditor (hideUi)
-                   │    └── tldraw instance (persistenceKey `page-${pageId}`) —
-                   │        direct markup + background + spillover shapes,
-                   │        camera locked to a fixed fit
-                   ├── corner button (toggles right panel)
-                   ├── (panel open) → RightPanel (hideUi)
-                   │    └── tldraw instance for the active canvas
-                   │         (persistenceKey `canvas-${canvasId}`, free camera)
-                   └── FloatingTldrawUi — tldraw's real DefaultToolbar +
-                        DefaultStylePanel, rendered once, bound via
-                        activeEditorRef to whichever of the two tldraw
-                        instances above the pointer last entered
+                   ├── header row (page nav left, canvas tabs right — the
+                   │    tabs are a plain UI control now, not a second
+                   │    mounted panel: switching tabs writes
+                   │    `activeCanvasId` and toggles which tagged shapes
+                   │    are visible, same store, no remount)
+                   └── PageMarkupEditor
+                        └── single tldraw instance (persistenceKey
+                            `page-${pageId}`, tldraw's own stock
+                            DefaultToolbar/DefaultStylePanel) — direct
+                            markup, background, and every linked canvas's
+                            shapes, tagged with `meta.canvasId` and
+                            shown/hidden by `activeCanvasId`
 ```
 
 **Note on this hierarchy:** an earlier pass scoped the tldraw `persistenceKey` directly to `notebookId`, which collapsed Notebook → Board → Canvas into Notebook → Canvas — a notebook could only ever hold one implicit canvas, not multiple named boards. This was corrected: `AppContainer` tracks an `activeItem` (`board` or `pdf`) alongside `activeNotebookId`, selecting a notebook shows `NotebookContents` (not a canvas), and only opening a specific item mounts its editor. This matches the entity hierarchy described above and in [Data Model](./data-model.md).
@@ -147,32 +147,15 @@ RootLayout
 
 ## Linked Canvases & Spillover (Surface 3)
 
-**Decided implementation (2026-08-04):**
+Under the single-canvas-per-page migration (see [build-order.md § Single Canvas Migration](./build-order.md#single-canvas-migration)), every Canvas linked to a Page — and the page's own direct markup and PDF background — live in exactly one tldraw store: `page-${pageId}`. There is no separate per-canvas store anymore, and no "spillover" as a mechanism distinct from ordinary canvas content, because there's only ever one camera and one set of shapes to begin with.
 
-Surface 2 made a Page's direct-markup layer and its tldraw coordinate space identical by embedding the PDF bitmap directly into the page's own tldraw store — that worked because a Page had exactly one markup layer. Surface 3 adds multiple linked Canvases per Page, and per [Data Model](./data-model.md#canvas), only the *active* canvas's PDF-side "spillover" should render on the page at once.
+**Mechanism:** every shape is tagged with `meta.canvasId`. The PDF background image and any direct markup carry a reserved sentinel (always visible regardless of which canvas is active) instead of a real canvas id — the same always-visible rule the old model applied to "untagged" shapes, just generalized so *nothing* is untagged anymore. Switching the active canvas tab toggles `opacity`/`isLocked` on every shape whose `meta.canvasId` doesn't match `activeCanvasId` — exactly the visibility mechanism `applySpilloverVisibility` (`app/components/spillover.ts`) already implemented; the only change is that *all* canvas content goes through this tag-and-toggle path now, not just the subset that used to "spill over" from a separate canvas store onto the page.
 
-Two approaches were considered:
-
-- **(a) One tldraw store per page, strokes tagged with `canvasId`, visibility toggled by filtering which shapes render based on `activeCanvasId`.**
-- (b) Separate page-level tldraw stores per canvas, swapped in/out as the active canvas changes.
-
-**Chosen: (a).** Reasons:
-
-- (b) would force a full remount of the page's tldraw instance (including re-verifying/recreating the background bitmap) on every tab switch — directly conflicting with the "switching tabs must feel instant, no loading state" requirement (ui-interaction.md §5).
-- (b) would also require the page background image and any direct markup to be duplicated into every per-canvas "page copy," risking drift between copies. Under (a) there is exactly one page store, so direct markup and the background can never be out of sync with themselves.
-- (a) composes naturally with cross-layer drawing (next milestone): when a stroke is split at the panel boundary, the PDF-side segment is just another page-store shape tagged with `canvasId` and the shared `strokeGroupId`. No architecture change is needed to go from "spillover visibility" (this milestone) to "spillover creation via real cross-layer strokes" (next milestone).
-- Deleting a canvas or its whole page already deletes the correct data: canvas-tagged shapes live inside `page-${pageId}`'s own tldraw store, so deleting the page (or the PDF, or the notebook) removes them automatically as part of the existing tldraw-store cascade — no separate spillover cleanup path was needed for those cases. Deleting a single (non-last) canvas does need an explicit sweep of its tagged shapes from the page store, which `handleDeleteCanvas` performs (see `app/components/spillover.ts` → `removeSpilloverForCanvas`).
-
-**Coordinate transforms:** `pdfToWorld`/`worldToPdf` from `src/canvas/coordinates.ts` are **not** used for spillover, for the same reason Surface 2 didn't need them for direct markup — the spillover shapes live in the page's own tldraw store at PDF-page coordinates by construction (approach (a)), so page space and tldraw space are already identical. Each linked **Canvas**, however, *is* a genuinely separate coordinate space (own pan/zoom, own tldraw store `canvas-${canvasId}`) — see [Coordinates § Multiple Canvas Spaces](./coordinates.md#future-multiple-canvas-spaces). Cross-layer drawing (next milestone) will be the first feature that actually needs a transform between a Canvas's world space and the Page's PDF space, since that's when a single in-progress stroke will span both.
-
-**Implementation:**
-
-- `app/components/spillover.ts` — `applySpilloverVisibility(editor, activeCanvasId)` sets `opacity`/`isLocked` on every shape with `meta.canvasId` set, showing only the active canvas's; untagged shapes (direct markup, the background image) are never touched. `addTestSpillover` is a **temporary test affordance** for this milestone only — it creates a tagged marker shape so the visibility rule can be exercised before real cross-layer drawing exists to create tagged shapes organically. `removeSpilloverForCanvas` sweeps a deleted canvas's tagged shapes out of the page store.
-- `app/components/PDFViewer.tsx` — `PageShell` owns `activeCanvasId` (mirrors `Page.activeCanvasId`, the source of truth) and the mounted page `Editor` instance, and re-runs `applySpilloverVisibility` whenever either changes.
-- `app/components/RightPanel.tsx` — tab bar (one per linked Canvas, plus "+") with the *active* canvas's own tldraw instance mounted below it, keyed by canvas id (`persistenceKey` `canvas-${canvasId}`) so switching tabs is a local remount, not a network operation.
-- Corner button (`PDFViewer.tsx`) toggles the panel; it's rendered with `z-[400]` because tldraw's own style panel uses up to `z-index: 300` and would otherwise sit on top of it.
+**Why this is simpler, not just different:** the old model needed two mechanisms — a real per-canvas tldraw store for the canvas's own content, plus a second "spillover" tagging system for the sliver of that content that also had to render on the page. Collapsing to one store removes the second mechanism entirely: a canvas's content *is* page content, always, filtered by tag. Switching canvases is a visibility toggle on one store, not a remount of a second tldraw instance — which also removes the entire class of coordinate-sync bugs that motivated this migration (see [build-order.md § Single Canvas Migration](./build-order.md#single-canvas-migration)).
 
 ## Surface 3 Fix Pass I — Split Layout & Active Panel Tracking (2026-08-04)
+
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.**
 
 Two UX/layout bugs were found after Surface 3 shipped and fixed:
 
@@ -183,6 +166,8 @@ Two UX/layout bugs were found after Surface 3 shipped and fixed:
 A third bug from this same pass — two tldraw instances each showing their own toolbar — was originally fixed by conditionally hiding each instance's stock UI based on which panel was active (`hideUi={activePanel !== <that panel>}`). **That approach was superseded one fix-pass later** by the shared Capsule toolbar — see below. `activePanel` survives as a concept, but now drives Capsule routing instead of `hideUi` toggling.
 
 ## Surface 3 Fix Pass II — Shared Capsule, Camera Lock, Header Alignment (2026-08-05)
+
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.**
 
 Three more issues, addressed together because the underlying fix for one (tracking which panel is "active") is reused directly by cross-layer drawing, the next milestone:
 
@@ -221,6 +206,8 @@ editor.zoomToBounds(bounds, { inset: 32, force: true }); // initial fit, matches
 
 ## Surface 3 Fix Pass III — tldraw's Own UI, Collapsible Sidebar (2026-08-05)
 
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.**
+
 **Replacing the hand-built Capsule with tldraw's real toolbar and style panel (`app/components/FloatingTldrawUi.tsx`).** The Capsule from Fix Pass II solved "exactly one toolbar" but at the cost of real functionality — no style panel, no hand tool, arrow, sticky note, image upload, or "more tools" overflow. Rebuilding those individually wasn't worth it, so this pass renders tldraw's actual `DefaultToolbar` and `DefaultStylePanel` components instead, still shared across both panels via the same `activeEditorRef`/`activePanel` mechanism from Fix Pass II (unchanged).
 
 This works standalone (outside a full `<Tldraw>` app) because `DefaultToolbar`/`DefaultStylePanel` read the editor via React context (`useEditor()`), not by requiring the whole app wrapper — confirmed by reading tldraw's own source: `Tldraw` is just `TldrawEditor` (establishes `EditorContext`) wrapping `TldrawUi` (which is `TldrawUiContextProvider` — itself just `useMaybeEditor()`, tolerant of an externally supplied context — around the UI content). Getting an actually-working standalone extraction took three internals, not the one that seemed sufficient going in:
@@ -237,6 +224,8 @@ None of this amounts to "a hard dependency on the full `<Tldraw>` app" — the f
 **Collapsible sidebar (`app/components/Sidebar.tsx`).** Two modes now: expanded (unchanged 256px full list) and collapsed (48px icon rail: expand-toggle, new-notebook, notebook-switcher). The switcher is a floating popover listing every notebook by name; available in both modes (not just collapsed), closes on outside click, `Escape`, or selection. Preference persists to `localStorage` (`marginal:sidebarCollapsed`) — same pure-UI-state pattern as the resizable split (Fix Pass I) and this pass's own toolbar work, not routed through `src/storage/db.ts`. Rationale: Surface 3 already puts two panels on screen before the sidebar is counted; an always-expanded sidebar competes directly with that on laptop/tablet-sized viewports.
 
 ## Cross-Layer Drawing (2026-08-05)
+
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.**
 
 A drag that starts on the PDF panel and crosses into the linked-canvas panel (or vice versa) renders as one continuous, unbroken stroke while drawing, then is split and stored as two linked segments once the drag completes. This is the milestone Fix Pass II and III's `activePanel`/`activeEditorRef` machinery was explicitly built to support (see those sections above).
 
@@ -269,6 +258,8 @@ If the drag never actually crosses (all points land on one side), a single plain
 
 ### Fix Pass — Stuck Drag State & Untagged Segments (2026-08-05)
 
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.**
+
 Two real bugs surfaced from actual (non-automated) use, both traced to the same root cause.
 
 **Symptom 1 — an unerasable tangle of scribble, visible only while the pen tool is active.** The original capture strip relied on `e.currentTarget.setPointerCapture(e.pointerId)` to keep receiving `pointermove`/`pointerup` once the drag left the strip's own 96px-wide bounds. In practice, a drag very quickly carries the pointer off the strip, and pointer capture is not reliable enough to guarantee the eventual `pointerup` still reaches an element-scoped handler (it can fail silently — this codebase's own earlier testing already hit a `NotFoundError` from it once, caught and ignored, which masked the deeper problem). When the `pointerup` never reached the strip, `finishDrag` never ran: `isDraggingRef` stayed `true` forever, and the strip kept a stale point buffer that every future `pointermove` over the strip — from unrelated later interactions — kept appending to, without ever clearing. The result rendered as the buffered-points SVG polyline, which is why it looked like an accumulating scribble tied to nothing: it was never a real shape, just leftover preview state. It vanished when switching tools only because the whole overlay unmounts when the active tool isn't `"draw"` — not because anything was cleaned up.
@@ -284,6 +275,8 @@ Re-verified after the fix (real off-strip releases, not just matched on/off-stri
 One methodology note for future verification of this feature: tldraw's IndexedDB persistence is debounced, not synchronous — reading the database immediately (within ~1 second) after a drag can show stale/empty results even though the shapes were created correctly in the editor's in-memory store and do get persisted shortly after. Wait at least 1–2 seconds before treating an empty IndexedDB read as a real failure.
 
 ### Fix Pass — Camera Lock Extended to the Linked-Canvas Panel (2026-08-05)
+
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.**
 
 The linked-canvas panel (`RightPanel.tsx`) is now camera-locked the same way the PDF panel already was (§4 above described why this wasn't done initially, and why it's revised now).
 
@@ -318,6 +311,7 @@ const handleMount = (editor: Editor) => {
 - **Schema** lives in `src/storage/types.ts` (TypeScript interfaces) and `src/storage/db.ts` (Dexie table definitions)
 - **Data access** is behind a small interface (`src/storage/db.ts` exports functions, not direct table access)
 - **Async handling** — all Dexie calls are async, but UI updates feel synchronous (optimistic updates)
+- **tldraw stores** — two persistenceKey namespaces, down from three: `board-${boardId}` (Board surface, unaffected) and `page-${pageId}` (a Page's direct markup, PDF background, and every linked Canvas's shapes, tagged with `meta.canvasId`). `canvas-${canvasId}` no longer exists as its own store — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.
 
 **Future evolution:** When a backend exists, IndexedDB becomes a local cache. The data-access interface layer means swapping in a sync layer won't require rewriting every component.
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useValue } from "@tldraw/state-react";
 import {
   AssetRecordType,
   Box,
@@ -23,10 +22,7 @@ import {
   updateCanvas,
 } from "@/src/storage/db";
 import { renderPageBitmap } from "@/src/pdf/renderer";
-import { addTestSpillover, applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
-import { RightPanel } from "./RightPanel";
-import { FloatingTldrawUi } from "./FloatingTldrawUi";
-import { CrossLayerCapture } from "./CrossLayerCapture";
+import { applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 
 interface PDFViewerProps {
@@ -97,18 +93,12 @@ interface PageShellProps {
   onNextPage: () => void;
 }
 
-const MIN_PAGE_PANEL_WIDTH = 360;
-const MIN_RIGHT_PANEL_WIDTH = 260;
-const DEFAULT_RIGHT_PANEL_WIDTH = 340;
-const RIGHT_PANEL_WIDTH_STORAGE_KEY = "marginal:rightPanelWidth";
-// Matches the divider's own footprint in the body row (mx-1 + w-2 + mx-1),
-// so the header row's spacer lines up exactly with it.
-const SPLIT_GAP_PX = 16;
+type CameraSnapshot = { x: number; y: number; z: number };
 
-// Owns everything scoped to a single page: the direct-markup tldraw
-// instance, the corner button, the linked-canvas right panel, the
-// resizable split between them, the unified header row (page nav + canvas
-// tabs), and which canvas is currently active (source of truth:
+// Owns everything scoped to a single page: the single shared tldraw
+// instance (direct markup + every linked canvas's shapes, tag-based — see
+// docs/build-order.md § Single Canvas Migration), the header row (page nav
+// + canvas tabs), and which canvas is currently active (source of truth:
 // Page.activeCanvasId).
 function PageShell({
   page,
@@ -119,69 +109,16 @@ function PageShell({
   onNextPage,
 }: PageShellProps) {
   const [pageEditor, setPageEditor] = useState<Editor | null>(null);
-  const [canvasEditor, setCanvasEditor] = useState<Editor | null>(null);
   const [canvases, setCanvases] = useState<Canvas[]>([]);
   const [activeCanvasId, setActiveCanvasIdState] = useState<string | null>(page.activeCanvasId);
-  const [panelOpen, setPanelOpen] = useState(false);
 
-  // Which panel the pointer is currently over — 'page' by default. Drives
-  // which editor the shared Capsule (see below) routes actions to. This is
-  // also the signal cross-layer drawing (next milestone) will read to know
-  // which panel a drag started in — see architecture.md.
-  const [activePanel, setActivePanel] = useState<"page" | "canvas">("page");
-  const activeEditorRef = useRef<Editor | null>(null);
-  const [activeEditorVersion, setActiveEditorVersion] = useState(0);
-
-  const splitContainerRef = useRef<HTMLDivElement>(null);
-  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
-  const rightPanelWidthRef = useRef(rightPanelWidth);
-  const [isResizingSplit, setIsResizingSplit] = useState(false);
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY);
-    const parsed = stored ? Number(stored) : NaN;
-    if (!Number.isNaN(parsed)) {
-      setRightPanelWidth(parsed);
-      rightPanelWidthRef.current = parsed;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isResizingSplit) return;
-
-    const handlePointerMove = (e: PointerEvent) => {
-      const container = splitContainerRef.current;
-      if (!container) return;
-      const rect = container.getBoundingClientRect();
-      const widthFromCursor = rect.right - e.clientX;
-      const maxWidth = Math.max(
-        MIN_RIGHT_PANEL_WIDTH,
-        rect.width - MIN_PAGE_PANEL_WIDTH
-      );
-      const clamped = Math.min(maxWidth, Math.max(MIN_RIGHT_PANEL_WIDTH, widthFromCursor));
-      rightPanelWidthRef.current = clamped;
-      setRightPanelWidth(clamped);
-    };
-
-    const handlePointerUp = () => {
-      setIsResizingSplit(false);
-      window.localStorage.setItem(
-        RIGHT_PANEL_WIDTH_STORAGE_KEY,
-        String(rightPanelWidthRef.current)
-      );
-    };
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-  }, [isResizingSplit]);
+  // The beforeCreate shape hook (registered once per editor, below) needs
+  // to read whichever canvas is active *at the moment a shape is created*,
+  // not whatever was active when the hook was registered — a plain ref
+  // updated every render (cheap) is the standard way to give a
+  // long-lived closure a live value without re-registering it constantly.
+  const activeCanvasIdRef = useRef(activeCanvasId);
+  activeCanvasIdRef.current = activeCanvasId;
 
   useEffect(() => {
     let cancelled = false;
@@ -195,75 +132,74 @@ function PageShell({
     };
   }, [page.id]);
 
-  // Keep the page's markup layer showing only the active canvas's spillover,
-  // whenever either the editor becomes available or the active canvas changes.
+  // Keep the page showing only the active canvas's tagged shapes, whenever
+  // either the editor becomes available or the active canvas changes.
+  // Clearing selection first avoids a stale selection outline/style-panel
+  // reading on a shape that just became hidden on the outgoing canvas.
   useEffect(() => {
     if (!pageEditor) return;
+    pageEditor.selectNone();
     applySpilloverVisibility(pageEditor, activeCanvasId);
   }, [pageEditor, activeCanvasId]);
 
-  // Re-point the Capsule's target whenever the hovered panel changes, or
-  // whenever that panel's editor instance changes underneath it (e.g. the
-  // canvas panel remounts a new tldraw instance on tab switch while the
-  // pointer is still over it).
+  // Auto-tag every newly-created shape with the currently-active canvas —
+  // callers never need to set meta.canvasId manually. A shape that already
+  // carries an explicit `canvasId` (the PDF background's reserved `null`
+  // sentinel, or a pasted/duplicated shape preserving its original tag) is
+  // left alone. Registered once per editor instance; unregistered on
+  // unmount/editor change via the returned callback.
   useEffect(() => {
-    const next = activePanel === "page" ? pageEditor : canvasEditor;
-    if (next && activeEditorRef.current !== next) {
-      activeEditorRef.current = next;
-      setActiveEditorVersion((v) => v + 1);
+    if (!pageEditor) return;
+    return pageEditor.sideEffects.registerBeforeCreateHandler("shape", (shape) => {
+      if (shape.meta && "canvasId" in shape.meta) return shape;
+      return { ...shape, meta: { ...shape.meta, canvasId: activeCanvasIdRef.current } };
+    });
+  }, [pageEditor]);
+
+  // Persists the outgoing canvas's current camera position (both locally,
+  // optimistically, and to Dexie) so it can be restored the next time that
+  // canvas becomes active — see data-model.md § Canvas. No-op if there's no
+  // editor yet or no previous canvas to save (e.g. first canvas ever).
+  const savePreviousCanvasCamera = (prevCanvasId: string | null) => {
+    if (!pageEditor || !prevCanvasId) return;
+    const camera = pageEditor.getCamera();
+    const snapshot: CameraSnapshot = { x: camera.x, y: camera.y, z: camera.z };
+    setCanvases((cs) =>
+      cs.map((c) => (c.id === prevCanvasId ? { ...c, lastCameraPosition: snapshot } : c))
+    );
+    updateCanvas(prevCanvasId, { lastCameraPosition: snapshot }).catch((error) =>
+      console.error("Failed to save canvas camera position:", error)
+    );
+  };
+
+  // Restores a canvas's saved camera position, if it has one. Null means
+  // this canvas has never been active before — leave the camera wherever
+  // it currently is, per data-model.md § Canvas.
+  const restoreCanvasCamera = (canvasList: Canvas[], canvasId: string | null) => {
+    if (!pageEditor || !canvasId) return;
+    const target = canvasList.find((c) => c.id === canvasId);
+    if (target?.lastCameraPosition) {
+      pageEditor.setCamera(target.lastCameraPosition);
     }
-  }, [activePanel, pageEditor, canvasEditor]);
+  };
 
-  // The PDF panel and the linked-canvas panel are two independent tldraw
-  // instances, each tracking its own current tool. Left alone, that means
-  // the shared Capsule (FloatingTldrawUi) appears to spontaneously change
-  // tool the instant the pointer crosses from one panel to the other — it's
-  // not changing, it's just now reading the *other* editor's independently-
-  // stale tool state. It also silently breaks cross-layer drawing: the
-  // capture strip (CrossLayerCapture) only intercepts pointer events while
-  // the active editor's tool is "draw", so if the panel the pointer is
-  // currently deemed "over" has drifted to some other tool, the strip stops
-  // rendering and a drag that should have been captured falls straight
-  // through to whichever panel is underneath instead, producing an ordinary
-  // in-panel stroke that stops dead at the panel edge.
-  //
-  // Fix: mirror tool changes across both editors. Each side only calls
-  // setCurrentTool when it's actually out of sync with the other, which
-  // both avoids redundant no-op calls and prevents the two effects below
-  // from feeding back into an infinite loop.
-  const pageToolId = useValue("page-tool-id", () => pageEditor?.getCurrentToolId() ?? null, [
-    pageEditor,
-  ]);
-  const canvasToolId = useValue(
-    "canvas-tool-id",
-    () => canvasEditor?.getCurrentToolId() ?? null,
-    [canvasEditor]
-  );
-
-  useEffect(() => {
-    if (!canvasEditor || !pageToolId || pageToolId === canvasToolId) return;
-    canvasEditor.setCurrentTool(pageToolId);
-  }, [pageToolId, canvasToolId, canvasEditor]);
-
-  useEffect(() => {
-    if (!pageEditor || !canvasToolId || canvasToolId === pageToolId) return;
-    pageEditor.setCurrentTool(canvasToolId);
-  }, [canvasToolId, pageToolId, pageEditor]);
-
-  const handleActivate = async (canvasId: string) => {
+  const handleActivate = (canvasId: string) => {
+    if (canvasId === activeCanvasId) return;
+    savePreviousCanvasCamera(activeCanvasId);
     setActiveCanvasIdState(canvasId);
-    try {
-      await setActiveCanvas(page.id, canvasId);
-    } catch (error) {
-      console.error("Failed to set active canvas:", error);
-    }
+    restoreCanvasCamera(canvases, canvasId);
+    setActiveCanvas(page.id, canvasId).catch((error) =>
+      console.error("Failed to set active canvas:", error)
+    );
   };
 
   const handleCreate = async () => {
     try {
+      savePreviousCanvasCamera(activeCanvasId);
       const canvas = await createCanvasAndActivate(page.id, `Canvas ${canvases.length}`);
       setCanvases((cs) => [...cs, canvas]);
       setActiveCanvasIdState(canvas.id);
+      // canvas.lastCameraPosition is null (brand new) — leave camera as-is.
     } catch (error) {
       console.error("Failed to create canvas:", error);
     }
@@ -288,30 +224,21 @@ function PageShell({
         getPage(page.id),
       ]);
       setCanvases(refreshedCanvases);
-      setActiveCanvasIdState(refreshedPage?.activeCanvasId ?? refreshedCanvases[0]?.id ?? null);
+      const nextActiveId = refreshedPage?.activeCanvasId ?? refreshedCanvases[0]?.id ?? null;
+      setActiveCanvasIdState(nextActiveId);
+      restoreCanvasCamera(refreshedCanvases, nextActiveId);
     } catch (error) {
       console.error("Failed to delete canvas:", error);
     }
   };
 
-  const handleAddTestSpillover = () => {
-    if (!pageEditor || !activeCanvasId) return;
-    const index = canvases.findIndex((c) => c.id === activeCanvasId);
-    const canvas = canvases[index];
-    if (!canvas) return;
-    addTestSpillover(pageEditor, activeCanvasId, canvas.name, index);
-  };
-
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden">
-      {/* Unified header row: PDF page nav (left) + canvas tabs (right),
-          same row, same height, split at the same point as the divider
-          in the body row below. */}
-      <div className="flex items-stretch h-11 px-2 border-b border-[#2a2a2a] shrink-0">
-        <div
-          className="flex-1 min-w-0 flex items-center justify-center gap-4"
-          style={{ minWidth: MIN_PAGE_PANEL_WIDTH }}
-        >
+      {/* Header row: PDF page nav (left) + canvas tabs (right), single row —
+          no divider to align with anymore, since there's only one panel.
+          See ui-interaction.md § PDF Page View for the layout decision. */}
+      <div className="flex items-center h-11 px-2 border-b border-[#2a2a2a] shrink-0">
+        <div className="flex items-center gap-4">
           <button
             onClick={onPrevPage}
             disabled={pageIndex === 0}
@@ -330,86 +257,23 @@ function PageShell({
             Next ›
           </button>
         </div>
-        {panelOpen && (
-          <>
-            <div style={{ width: SPLIT_GAP_PX }} className="shrink-0" />
-            <div className="shrink-0" style={{ width: rightPanelWidth }}>
-              <CanvasTabBar
-                canvases={canvases}
-                activeCanvasId={activeCanvasId}
-                onActivate={handleActivate}
-                onCreate={handleCreate}
-                onRename={handleRename}
-                onDelete={handleDelete}
-                onClose={() => setPanelOpen(false)}
-                onAddTestSpillover={handleAddTestSpillover}
-              />
-            </div>
-          </>
-        )}
+        <div className="flex-1" />
+        <CanvasTabBar
+          canvases={canvases}
+          activeCanvasId={activeCanvasId}
+          onActivate={handleActivate}
+          onCreate={handleCreate}
+          onRename={handleRename}
+          onDelete={handleDelete}
+        />
       </div>
 
-      {/* Body row: PDF panel | divider | canvas panel */}
-      <div ref={splitContainerRef} className="relative flex-1 flex overflow-hidden p-2 gap-0">
-        <div
-          className="relative flex-1 min-w-0 border border-[#2a2a2a] rounded-md overflow-hidden bg-[#121212]"
-          style={{ minWidth: MIN_PAGE_PANEL_WIDTH }}
-          onPointerEnter={() => setActivePanel("page")}
-        >
-          <PageMarkupEditor
-            page={page}
-            pdfDocumentId={pdfDocumentId}
-            onEditorMount={setPageEditor}
-          />
-          <button
-            onClick={() => setPanelOpen((open) => !open)}
-            className="absolute top-3 right-3 z-[400] w-7 h-7 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1c1c1e] text-[#8a8a8a] hover:text-[#f0f0f0] hover:bg-[#242424] text-xs shadow-md"
-            title="Linked canvases"
-          >
-            ⧉
-          </button>
-        </div>
-
-        {panelOpen && (
-          <>
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              onPointerDown={(e) => {
-                e.preventDefault();
-                setIsResizingSplit(true);
-              }}
-              className={`w-2 shrink-0 mx-1 cursor-col-resize rounded-full transition-colors ${
-                isResizingSplit ? "bg-[#3a3a3a]" : "bg-transparent hover:bg-[#2a2a2a]"
-              }`}
-              title="Drag to resize"
-            />
-            <div
-              className="shrink-0 border border-[#2a2a2a] rounded-md overflow-hidden"
-              style={{ width: rightPanelWidth }}
-              onPointerEnter={() => setActivePanel("canvas")}
-            >
-              <RightPanel activeCanvasId={activeCanvasId} onEditorMount={setCanvasEditor} />
-            </div>
-            <CrossLayerCapture
-              pageEditor={pageEditor}
-              canvasEditor={canvasEditor}
-              activeCanvasId={activeCanvasId}
-              activeEditorRef={activeEditorRef}
-              activeEditorVersion={activeEditorVersion}
-              rightPanelWidth={rightPanelWidth}
-              splitContainerRef={splitContainerRef}
-              onActivatePanel={setActivePanel}
-            />
-          </>
-        )}
+      {/* Single shared tldraw instance: PDF background, direct markup, and
+          every linked canvas's shapes (tag-based visibility) — see
+          docs/build-order.md § Single Canvas Migration. */}
+      <div className="relative flex-1 min-w-0 overflow-hidden bg-[#121212]">
+        <PageMarkupEditor page={page} pdfDocumentId={pdfDocumentId} onEditorMount={setPageEditor} />
       </div>
-
-      {/* tldraw's own toolbar + style panel, floating over both panels and
-          bound to whichever one the pointer last entered — see
-          FloatingTldrawUi.tsx. Both underlying Tldraw instances mount with
-          hideUi; this is the only chrome on screen. */}
-      <FloatingTldrawUi activeEditorRef={activeEditorRef} version={activeEditorVersion} />
     </div>
   );
 }
@@ -421,12 +285,12 @@ interface CanvasTabBarProps {
   onCreate: () => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
-  onClose: () => void;
-  onAddTestSpillover: () => void;
 }
 
-// Tab bar for the linked-canvas panel, rendered in PageShell's unified
-// header row (aligned with the PDF page nav on the left).
+// Tab bar rendered in PageShell's header row, right-aligned next to the PDF
+// page nav. Tabs no longer mount/unmount an editor — clicking one just
+// changes activeCanvasId and toggles which tagged shapes are visible in the
+// single shared page store (see spillover.ts).
 function CanvasTabBar({
   canvases,
   activeCanvasId,
@@ -434,8 +298,6 @@ function CanvasTabBar({
   onCreate,
   onRename,
   onDelete,
-  onClose,
-  onAddTestSpillover,
 }: CanvasTabBarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -509,26 +371,11 @@ function CanvasTabBar({
       >
         +
       </button>
-      <div className="flex-1" />
-      <button
-        onClick={onAddTestSpillover}
-        className="shrink-0 px-2 text-[#8a8a8a] hover:text-[#f0f0f0] text-[10px]"
-        title="Temporary test affordance (Surface 3 verification) — marks the page with this canvas's spillover. Real cross-layer drawing is next milestone."
-      >
-        ⊕ spill
-      </button>
-      <button
-        onClick={onClose}
-        className="shrink-0 px-2 text-[#8a8a8a] hover:text-[#f0f0f0] text-xs"
-        title="Close panel"
-      >
-        ✕
-      </button>
 
       <DeleteConfirmationDialog
         isOpen={deleteConfirmationId !== null}
         title="Delete Canvas"
-        message="Delete this linked canvas and its spillover on the page? This cannot be undone."
+        message="Delete this canvas and its markup? This cannot be undone."
         onConfirm={() => {
           if (deleteConfirmationId) onDelete(deleteConfirmationId);
           setDeleteConfirmationId(null);
@@ -546,7 +393,11 @@ interface PageMarkupEditorProps {
   onEditorMount: (editor: Editor) => void;
 }
 
-// One tldraw instance per Page, persisted under `page-${pageId}`.
+// One tldraw instance per Page, persisted under `page-${pageId}` — the only
+// editor for this page, mounted with its own stock UI (no hideUi). Every
+// linked Canvas's shapes live here too, tagged with meta.canvasId, shown or
+// hidden by PageShell's applySpilloverVisibility effect — see
+// docs/build-order.md § Single Canvas Migration.
 //
 // Coordinate model: the rendered page bitmap is inserted as a locked image
 // shape at (0,0) sized to the page's native PDF-point dimensions. PDF-page
@@ -555,43 +406,21 @@ interface PageMarkupEditorProps {
 // Transform from src/canvas/coordinates.ts. Pan/zoom moves page and markup
 // together, so markup can never drift relative to the page.
 //
-// Camera lock: the PDF panel is a fixed viewer panel, not a second infinite
-// canvas — after the initial fit, user-driven pan/zoom (drag, wheel, pinch,
-// keyboard) is disabled via tldraw's camera-options API (isLocked + a
-// `fit-min` constraint, i.e. letterboxed containment: the page's full extent
-// always stays visible, whichever axis is the tighter fit). Drawing/markup
-// interaction is unaffected — only camera movement is locked. See
-// architecture.md for the full rationale.
-//
-// Spillover shapes (Surface 3) also live in this same store, tagged with
-// `meta.canvasId` — see app/components/spillover.ts.
-//
-// Always mounts with hideUi — the shared Capsule is the only toolbar.
+// Camera: free pan/zoom, same as Boards (Surface 1) — no lock, no
+// constraints. The page is fit-to-view once, the first time its background
+// is created (see ensurePageBackground below); after that, tldraw's own
+// persisted session state carries the camera across reloads, same as a
+// Board. Switching canvas tabs overrides this via explicit setCamera calls
+// in PageShell (restoreCanvasCamera), not via any lock here.
 function PageMarkupEditor({ page, pdfDocumentId, onEditorMount }: PageMarkupEditorProps) {
   const handleMount = (editor: Editor) => {
-    const bounds = new Box(0, 0, page.width, page.height);
-    editor.setCameraOptions({
-      isLocked: true,
-      wheelBehavior: "none",
-      constraints: {
-        bounds,
-        padding: { x: 32, y: 32 },
-        origin: { x: 0.5, y: 0.5 },
-        initialZoom: "fit-min",
-        baseZoom: "fit-min",
-        behavior: "fixed",
-      },
-    });
-    // Camera is now locked — force the initial fit through explicitly so it
-    // matches the constraints above exactly.
-    editor.zoomToBounds(bounds, { inset: 32, force: true });
     onEditorMount(editor);
     void ensurePageBackground(editor, page, pdfDocumentId);
   };
 
   return (
     <div className="w-full h-full">
-      <Tldraw persistenceKey={`page-${page.id}`} onMount={handleMount} autoFocus hideUi />
+      <Tldraw persistenceKey={`page-${page.id}`} onMount={handleMount} autoFocus />
     </div>
   );
 }
@@ -611,6 +440,7 @@ async function ensurePageBackground(
     if (editor.isDisposed || editor.getShape(shapeId)) return;
 
     const assetId: TLAssetId = AssetRecordType.createId(`pdfbg-${page.id}`);
+    const bounds = new Box(0, 0, page.width, page.height);
     editor.run(
       () => {
         editor.createAssets([
@@ -635,6 +465,10 @@ async function ensurePageBackground(
           x: 0,
           y: 0,
           props: { assetId, w: page.width, h: page.height },
+          // Reserved sentinel — always visible regardless of active canvas.
+          // Explicit so the auto-tag beforeCreate hook (PageShell) leaves it
+          // alone instead of tagging it with whichever canvas is active.
+          meta: { canvasId: null },
         });
         // Below any markup that might already exist, then lock against
         // selection/erase/move.
@@ -643,6 +477,11 @@ async function ensurePageBackground(
       },
       { history: "ignore" }
     );
+    // First time this page's background is created — fit the whole page in
+    // view once. Free camera afterwards (no lock), same as a Board; a later
+    // reload restores wherever the user left the camera via tldraw's own
+    // persisted session state, not this call.
+    editor.zoomToBounds(bounds, { inset: 32 });
   } catch (error) {
     console.error("Failed to render PDF page background:", error);
   }

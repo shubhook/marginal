@@ -4,7 +4,16 @@ export interface Canvas {
   name: string;
   order: number;
   isActive: boolean;
-  // Strokes and shapes would be stored separately (tldraw's own format)
+  // Camera position (page-store coordinates) to restore when this canvas
+  // becomes active again. Null until this canvas has ever been active —
+  // see data-model.md § Canvas.
+  lastCameraPosition: {
+    x: number;
+    y: number;
+    z: number; // zoom level
+  } | null;
+  // Strokes and shapes live in the page's single shared tldraw store
+  // (page-${pageId}), tagged with meta.canvasId — not stored separately.
   createdAt: number;
   updatedAt: number;
 }

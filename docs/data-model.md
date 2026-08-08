@@ -8,10 +8,11 @@ Complete schema and entity relationships.
 Notebook (flat container)
   ├── Board (infinite canvas, standalone)
   └── PDFDocument
-       └── Page (one per PDF page)
-            ├── Direct markup (strokes on page itself)
-            └── Canvas[] (linked side-canvases, 0 to many)
-                 └── activeCanvasId (only one active per page)
+       └── Page (one per PDF page — fixed PDF background, single
+            shared infinite tldraw canvas on top)
+            └── Canvas[] (named ink layers over that shared canvas,
+                 1 to many — tag-based, not separate stores)
+                 └── activeCanvasId (which tag's shapes are visible)
 ```
 
 ## Entities
@@ -155,15 +156,20 @@ interface Page {
 
 ### Canvas
 
-Linked side-canvas attached to a page. Independent coordinate space.
+A named ink layer over a page's single shared infinite canvas. Not a separate tldraw instance — canvases are a tagging/visibility concept, not a storage or coordinate-space concept.
 
 ```typescript
 interface Canvas {
-  id: string;                // Unique identifier
-  pageId: string;            // Parent page
-  name: string;              // Display name (e.g., "Canvas 1")
-  order: number;             // Tab order on right panel
-  isActive: boolean;         // Only one per page is true
+  id: string;
+  pageId: string;
+  name: string;
+  order: number;
+  isActive: boolean;
+  lastCameraPosition: {
+    x: number;
+    y: number;
+    z: number;               // zoom level
+  } | null;                  // null until this canvas has ever been active
   createdAt: number;
   updatedAt: number;
 }
@@ -171,42 +177,22 @@ interface Canvas {
 
 **Invariants:**
 - Every canvas belongs to exactly one page
-- Exactly one canvas per page has `isActive: true` (enforced by switching logic)
-- order field allows reordering tabs
+- Exactly one canvas per page has `isActive: true`
+- `lastCameraPosition` is `null` only for a canvas that's never been the active one
 
-**Lifecycle:**
-- Create: `createCanvas(pageId, name)` → new canvas, next order value, isActive = (isFirstCanvas)
-- Create + activate: `createCanvasAndActivate(pageId, name)` → creates and immediately makes it the page's active canvas ("+" tab auto-focuses per ui-interaction.md §5)
-- Read: `getCanvas(id)` or `getCanvasesByPage(pageId)` → ordered by order
-- Update: `updateCanvas(id, updates)` → rename, change order, change isActive
-- Set active: `setActiveCanvas(pageId, canvasId)` → updates `Page.activeCanvasId` (source of truth) and syncs every sibling `Canvas.isActive` to match, in one transaction
-- Delete: `deleteCanvas(id)` → removes the canvas row **and** its tldraw store (`canvas-${id}`); throws if it's the page's last remaining canvas (a page must always have at least one — never a null `activeCanvasId`); if the deleted canvas was active, the next-lowest-order sibling becomes active
+**Lifecycle:** unchanged — `createCanvas`, `createCanvasAndActivate`, `getCanvas`/`getCanvasesByPage`, `updateCanvas`, `setActiveCanvas`, `deleteCanvas`. `setActiveCanvas` now additionally reads the target canvas's `lastCameraPosition` and, if non-null, applies it via `editor.setCamera()`; if null (first visit), leave the camera wherever it currently is.
 
 **Content storage:**
-- Strokes, shapes, text: Managed by tldraw, persisted separately (own store, `canvas-${canvasId}`)
+- There is exactly one tldraw store per Page (`page-${pageId}`). Every shape drawn — former "direct markup," former "spillover" — lives in this single store as an ordinary tldraw shape.
+- Every shape is tagged `meta.canvasId` at creation time, set to whichever canvas is active when the shape is drawn.
+- Visibility is enforced by canvasId: on every `activeCanvasId` change, shapes tagged with the new active canvas's id become visible, all others are hidden. Same mechanism `spillover.ts` already implements, now applied to all markup instead of a subset.
+- The PDF page background image (`pdfbg-${pageId}`) is tagged `meta.canvasId: null` (reserved sentinel) and is always visible regardless of active canvas.
 
-**Implementation status:** fully wired as of 2026-08-04 (Surface 3) — `app/components/RightPanel.tsx` renders the tab bar and the active canvas's own tldraw instance; `app/components/PDFViewer.tsx`'s `PageShell` owns the corner button, panel visibility, and `activeCanvasId` state (mirroring `Page.activeCanvasId`).
+**What replaces "spillover":** the term described markup that lived on the PDF page but belonged to a specific linked canvas, distinguished from "direct markup" belonging to no canvas. That distinction collapses under this model — everything drawn belongs to whichever canvas is active at draw-time. There is no separate "direct markup" category.
 
-**Spillover behavior:**
-- Only the active canvas's PDF-side spillover is visible on the page at once. **Storage decision (Surface 3, see [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3)):** spillover shapes live inside the *page's own* tldraw store (`page-${pageId}`), tagged with `meta.canvasId`, not inside the canvas's store and not computed on the fly. This supersedes the earlier "rendered on-top, not stored on page" note — that description predated the concrete implementation decision.
-- Switching active canvas swaps visible spillover by toggling opacity/lock on tagged shapes (real-time, no load delay) — see `app/components/spillover.ts`.
-- Real cross-layer strokes (next milestone) will populate these tagged shapes by splitting a stroke at the panel boundary; until then, `addTestSpillover` is a temporary test affordance used only to verify the visibility rule.
+## Cross-Layer Strokes (removed 2026-08-07)
 
-## Cross-Layer Strokes
-
-**Implemented 2026-08-05.** When a stroke spans both PDF page and linked canvas (cross-layer drawing):
-
-```typescript
-interface CrossLayerStroke {
-  strokeGroupId: string;     // Shared ID for linked segments
-  pdfSegment: Stroke;        // Half on PDF page
-  canvasSegment: Stroke;     // Half on canvas
-}
-```
-
-**Storage rule:** Store as two separate strokes in their respective coordinate spaces, linked by `strokeGroupId`. This allows each half to render independently and transform independently if pan/zoom changes. Concretely, under the Surface 3 spillover model, `pdfSegment` is a `line`-type shape in the page's own tldraw store tagged with `meta: { canvasId, strokeGroupId }` (same `meta.canvasId` mechanism `addTestSpillover` used as a placeholder) and `canvasSegment` is a `line`-type shape in that canvas's own tldraw store (`canvas-${canvasId}`), tagged `meta: { strokeGroupId }` — no new storage location was needed, only the logic (`app/components/crossLayerDrawing.ts`) that splits one drawn stroke into these two tagged pieces at the panel boundary. See [Architecture § Cross-Layer Drawing](./architecture.md#cross-layer-drawing-2026-08-05).
-
-**Known limitation:** If one panel is panned/zoomed after a cross-layer stroke is drawn, the halves can visually separate (different coordinate transforms). This is accepted; not a bug to fix silently.
+A prior architecture (two separate tldraw instances — PDF panel and linked-canvas panel) required splitting a drawn stroke into two linked segments at the panel boundary. This is no longer applicable: with a single shared canvas per page (see [Canvas](#canvas)), there is no panel boundary and no coordinate-space mismatch to reconcile. A stroke drawn across what used to be the panel divider is now just one ordinary shape, tagged with whichever canvas is active — same as any other markup.
 
 ## Indexing & Queries
 

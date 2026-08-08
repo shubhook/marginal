@@ -234,6 +234,8 @@ All 12 tests should pass before any UI touches the coordinate system.
 
 ## Multiple Canvas Spaces (Surface 3)
 
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.** Each linked Canvas is no longer a separate tldraw instance with its own transform; canvases are now a tag on shapes within one shared page-space store. Kept below as historical record.
+
 Surface 3 (linked canvases, 2026-08-04) confirmed each canvas has its own transform, exactly as anticipated below — each linked Canvas is a fully independent tldraw instance (own pan/zoom, own persistenceKey `canvas-${canvasId}`).
 
 What Surface 3 did **not** need, and what turned out to still be superseded by the Surface 2 approach: the functions in this file. PDF-side spillover (which of a page's linked canvases' PDF-side markup is currently visible) is implemented as tagged shapes living directly inside the *page's* own tldraw store — see [Architecture § Linked Canvases & Spillover](./architecture.md#linked-canvases--spillover-surface-3) — so page space and tldraw space stay identical by construction, the same way direct markup does. No `pdfToWorld`/`worldToPdf` calls were added.
@@ -256,6 +258,8 @@ const canvasPoint = worldToPdf(mouseWorldPoint, canvasTransform);
 No changes needed to coordinate functions; just keep separate transforms per surface.
 
 ## Cross-Layer Drawing: Resolving the Forward-Looking Note Above (2026-08-05)
+
+**Superseded 2026-08-07 — see [Single Canvas Migration](./build-order.md#single-canvas-migration) in build-order.md.** `CrossLayerCapture.tsx` and `crossLayerDrawing.ts` (referenced throughout this section) have been deleted — there is no panel boundary left to capture a drag crossing. Kept below as historical record.
 
 The note above anticipated cross-layer drawing would be the first feature to need a transform between a Canvas's world space and the Page's PDF space, via `pdfToWorld`/`worldToPdf`. It didn't, and deliberately wasn't extended to.
 

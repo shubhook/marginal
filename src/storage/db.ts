@@ -23,6 +23,22 @@ export class MarginalDB extends Dexie {
     this.version(2).stores({
       pdfFiles: "pdfDocumentId",
     });
+    // v3: Canvas.lastCameraPosition (single-canvas migration — see
+    // data-model.md § Canvas and build-order.md § Single Canvas Migration).
+    // Not an indexed field, so the store's index string is unchanged; the
+    // version bump exists to run the backfill below.
+    this.version(3)
+      .stores({
+        canvases: "id, pageId, order, createdAt",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("canvases")
+          .toCollection()
+          .modify((canvas) => {
+            canvas.lastCameraPosition = null;
+          });
+      });
   }
 }
 
@@ -31,6 +47,16 @@ export const db = new MarginalDB();
 // tldraw persists each surface's strokes in its own IndexedDB database named
 // `${TLDRAW_DB_PREFIX}${persistenceKey}`. Deleting a Board or Page must also
 // delete that database, or the markup would be orphaned forever.
+//
+// Single Canvas Migration note: `canvas-${id}` stores are no longer created
+// (a Canvas's shapes now live tagged inside `page-${pageId}`) — the
+// `deleteTldrawData("canvas-...")` calls below are kept only as harmless
+// best-effort cleanup of that legacy per-canvas store name, in case one
+// exists from before this migration; deleting a database that was never
+// created is a no-op. Pre-migration canvas content in those legacy stores is
+// **not** migrated into the shared page store — flagged per build-order.md §
+// Single Canvas Migration rather than attempting a complex data transform on
+// pre-MVP dev data.
 const TLDRAW_DB_PREFIX = "TLDRAW_DOCUMENT_v2";
 
 export function deleteTldrawData(persistenceKey: string): Promise<void> {
@@ -316,6 +342,7 @@ export async function createCanvas(pageId: string, name: string): Promise<Canvas
     name,
     order,
     isActive: order === 1,
+    lastCameraPosition: null,
     createdAt: now,
     updatedAt: now,
   };

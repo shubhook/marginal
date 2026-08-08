@@ -4,18 +4,19 @@ Layout, navigation, and user interaction patterns.
 
 ## Top-Level Layout
 
+**Revised 2026-08-07 (Single Canvas Migration — see [build-order.md](./build-order.md#single-canvas-migration)):** the right panel is gone. A PDF page is a single surface now, same shape as a Board — linked canvases are tabs in that surface's own header, not a second panel beside it.
+
 ```
 ┌─────────────────────────────────────────────┐
-│ Sidebar (left)  │  Main Surface             │
-│ Notebooks       │  (Canvas/PDF)    │Panel   │
-│ Boards          │                  │(opt)   │
-│ PDFs            │                  │        │
+│ Sidebar (left)  │  Main Surface              │
+│ Notebooks       │  (Board canvas, or a PDF   │
+│ Boards          │   page — header + one      │
+│ PDFs            │   shared canvas)           │
 └─────────────────────────────────────────────┘
 ```
 
 - **Sidebar** (left, collapsible): Persistent list of notebooks, boards, PDFs
-- **Main surface** (center): Active board (canvas) or PDF page
-- **Right panel** (optional): Linked canvas tabs (only when PDF with canvases open)
+- **Main surface** (center): Active board (canvas) or PDF page — both are exactly one tldraw instance, no split
 
 ## Navigation Model
 
@@ -48,7 +49,7 @@ This is not a file browser. Use sidebar to switch context. Keyboard shortcuts (f
 
 The switcher (☰) is available in **both** modes (also present in the expanded header, next to the collapse toggle) — it's a quick-jump popover, not exclusive to the collapsed rail. Clicking a notebook in it switches immediately and closes the popover; it closes on outside click or `Escape` too.
 
-**Rationale:** Surface 3 already puts two panels on screen (PDF page + linked canvas) before the sidebar is even counted. An always-expanded 256px sidebar competes directly with that on a laptop or tablet-sized viewport, so collapsing it to a rail is a real space-usability need, not a nice-to-have. The collapsed/expanded preference persists to `localStorage` (`marginal:sidebarCollapsed`) — pure UI state, not app data, same pattern as the resizable split (§ PDF Page View below) and not routed through `src/storage/db.ts`.
+**Rationale:** built when Surface 3 put two panels on screen (PDF page + linked canvas) before the sidebar was even counted, competing directly with an always-expanded 256px sidebar on a laptop or tablet-sized viewport. The single-canvas migration (2026-08-07) later removed that second panel, but the collapsed rail is still worth keeping — screen space is still finite. The collapsed/expanded preference persists to `localStorage` (`marginal:sidebarCollapsed`) — pure UI state, not app data, not routed through `src/storage/db.ts`.
 
 `Cmd+B` as a keyboard shortcut for this toggle is still future work, not built here.
 
@@ -92,73 +93,34 @@ Present in Canvas and PDF modes. Bottom-center of screen.
 ### Context Switching
 
 On Canvas: all tools available
-On PDF: pen/shapes/text draw to page OR active canvas (see below)
+On PDF: all tools draw into the single shared page canvas, auto-tagged with whichever canvas tab is active (see [PDF Page View](#pdf-page-view) below) — there's no separate "page vs. canvas" surface to route between anymore.
 
 ## PDF Page View
 
-### Fixed Dimensions & Camera Lock
+**Revised 2026-08-07 (Single Canvas Migration — see [build-order.md](./build-order.md#single-canvas-migration)):** everything in this section through "Linked Canvas Panel" below describes the pre-migration two-panel design and no longer reflects the app. Superseded, not deleted — see [Architecture](./architecture.md) for the historical Surface 3 / Fix Pass / Cross-Layer Drawing sections this corresponds to. What replaced it:
 
-The PDF page's own content (the rendered bitmap) is at native aspect ratio, matching source page dimensions. **Fixed 2026-08-05:** the panel is a locked, fixed viewer, not a second pannable canvas — after the initial fit, drag-pan, wheel/pinch-zoom, and keyboard zoom shortcuts are all disabled on the PDF panel specifically (tldraw's camera-options `isLocked`). The whole page always stays visible, letterboxed on whichever axis has slack if the panel's aspect ratio doesn't match the page's (`fit-min` — see [Architecture § Camera Lock](./architecture.md#surface-3-fix-pass-ii--shared-capsule-camera-lock-header-alignment-2026-08-05) for the full rationale and why `fit-max` — which would crop the page — was rejected). Drawing/markup interaction is unaffected; only camera movement is locked. The linked-canvas panel keeps a normal, fully free camera.
+### One Surface, Free Camera
 
-### Bounded Panel & Resizable Split
+A PDF page is a single tldraw instance — the rendered page bitmap as a locked background image, plus every stroke ever drawn on that page, all in one store. There is no separate panel, no camera lock, no resizable split: pan/zoom freely, exactly like a Board (Surface 1). The page is fit-to-view once, the first time it's opened; after that, tldraw's own persisted session state remembers wherever the camera was left, across reloads.
 
-**Fixed 2026-08-04** (was a bug: the PDF page previously rendered full-bleed as if it were the entire canvas surface, with no visible container). The PDF page and the linked-canvas panel each render inside a distinct, bordered container (`border-subtle`, 1px, `overflow: hidden`, per STYLING.md §7) with a small inset from the app-shell background, so each reads as a panel rather than as the whole surface.
+### Header Row
 
-When the right panel is open, a draggable divider sits between the two panels:
-- Drag to resize; both sides respect a minimum width (PDF panel: 360px, canvas panel: 260px) so neither can be dragged to zero.
-- The divider is a thin hit-target that highlights on hover/drag; cursor becomes `col-resize`.
-- The split position is pure UI state, not app data — persisted to `localStorage` (`marginal:rightPanelWidth`), not through the Dexie data-access layer. It survives reloads but is not part of any entity.
-- Resizing the PDF panel re-fits its (locked) camera automatically to the new width — the page never looks mis-framed after a drag.
+One row above the canvas: page nav (‹ Prev · Page N/M · Next ›) left-aligned, canvas tabs right-aligned. No divider to line up with anymore — this is a plain header, not a split layout. (Layout decision made alongside the migration; if a different arrangement is wanted later, this is a one-file change in `PageShell`, `app/components/PDFViewer.tsx`.)
 
-### Unified Header Row
+### Canvas Tabs
 
-**Fixed 2026-08-05** (was a bug: the PDF page nav and the canvas tab bar rendered as two separate strips at different heights). Both now render in one row, same height, text baseline-aligned: page nav (‹ Prev · Page N/M · Next ›) on the left, canvas tabs on the right when the panel is open. The row's left/right split lines up exactly with the panel divider beneath it, including while dragging.
+Canvas tabs live in that header row, not a side panel:
+- One tab per linked Canvas, "+" creates a new one (auto-focused)
+- Clicking a tab sets `activeCanvasId` and toggles which tagged shapes are visible in the single shared store — it does **not** mount or unmount anything; the editor underneath never changes
+- Switching tabs also saves the outgoing canvas's camera position and restores the incoming canvas's saved position (if it has one — a canvas that's never been active before just leaves the camera where it is). See [Data Model § Canvas](./data-model.md#canvas)
+- Default names: "Canvas 0", "Canvas 1", etc.; double-click to rename
+- Deleting a canvas removes its tagged shapes from the page; the last remaining canvas on a page can't be deleted
 
-**Per-panel symmetry:** the page nav is centered *within its own panel's width* (the left section of the header row), not across the full window — and canvas tabs stay left-aligned within their panel, matching normal tab-bar convention (tabs are never centered). This was re-verified (2026-08-05) by measuring the nav's content bounding box against its section's bounding box directly in the browser — they share the same center point, confirmed independent of window width. If this ever looks off in practice, check `PageShell`'s header row markup in `PDFViewer.tsx` first (the left section is a `flex-1` div with `justify-center`, matching the same width formula as the PDF panel below it) before assuming new work is needed.
+### Toolbar & Style Panel — tldraw's Own UI
 
-### Corner Button
+Every PDF page and every Board now mounts a single, ordinary `<Tldraw>` instance with its stock UI showing (no `hideUi`, no externally-mounted toolbar) — the two-panel-era problem of "two tldraw instances both wanting to show their own chrome" doesn't exist anymore, since there's only ever one instance per surface.
 
-Top-right of the PDF panel, small + unobtrusive. Toggles right panel (linked canvases).
-
-### Direct Markup
-
-Tools (pen, shapes, text) draw directly on the page itself. Always available, regardless of right panel state.
-
-### Toolbar & Style Panel — tldraw's Own UI, Shared
-
-**Fixed 2026-08-05, replacing a hand-built minimal toolbar** (the "Capsule": select/pen/rectangle/text/eraser/undo/redo only, built one pass earlier to solve the two-toolbars-at-once bug). That reduced set silently dropped real functionality — no color/fill/dash/size style panel, no hand tool, arrow, sticky note, image upload, or more-tools overflow. Rebuilding those individually wasn't worth it, so this pass swaps in tldraw's *actual* `DefaultToolbar` and `DefaultStylePanel` components instead, re-bound to whichever panel is active.
-
-Both the PDF panel and the linked-canvas panel always mount with tldraw's UI hidden entirely (`hideUi`). The **only** chrome on screen is:
-- The real tldraw toolbar — bottom-center, spanning the split view (both panels combined when open, just the PDF panel when closed — not the whole browser window). Full native tool set: select, hand, pen, eraser, arrow, text, sticky note, image, shapes (rectangle/ellipse/triangle/diamond/star/etc.), laser, highlighter, frame, with the same "more tools" overflow behavior as stock tldraw.
-- The real tldraw style panel — top-right of the split view, offset below the corner button. Full color/fill/dash/size controls, same as stock tldraw.
-
-Every action targets whichever panel's editor the pointer most recently entered — `activePanel: 'page' | 'canvas'`, the same tracking concept from the earlier fix pass, now driving which editor these shared components are bound to (via React context) instead of `hideUi` toggling. Both the active-tool highlight and the style panel's values update live to match whichever panel has focus.
-
-This is not a one-off UI patch: cross-layer drawing (next milestone) reads the same tracking to know which panel a drag started in. See [Architecture § Shared Toolbar & Style Panel](./architecture.md#surface-3-fix-pass-iii--tldraws-own-ui-collapsible-sidebar-2026-08-05).
-
-Visual styling is still stock tldraw, not STYLING.md §5's custom floating pill — that visual treatment (final icon set, exact spacing/shadow) remains a genuine Polish-phase task. What's built now is the *architecture* that makes a shared, cross-panel toolbar possible at all.
-
-## Linked Canvas Panel
-
-### Appearance
-
-Right side of screen, inside its own bordered panel next to the PDF panel (see Bounded Panel & Resizable Split above). Slides in/out via the corner button. Tabs render in the unified header row (see above), aligned with the PDF page nav.
-
-### Tab Behavior
-
-- One tab per linked Canvas
-- "+" tab creates new canvas (auto-focused)
-- Clicking tab sets it as active (changes spillover on PDF page)
-- Tab order matches Canvas order field
-- Active tab marked with accent underline (not filled background)
-
-### Canvas List
-
-Default names: "Canvas 0", "Canvas 1", etc. (user-editable via future rename UI).
-
-### Closing
-
-Right panel close button hides panel, does not delete canvases.
+Visual styling is still stock tldraw, not STYLING.md §5's custom floating pill — that visual treatment remains a genuine Polish-phase task.
 
 ## Empty States
 
