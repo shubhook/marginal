@@ -7,6 +7,10 @@ interface DeleteConfirmationDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   isDangerous?: boolean;
+  // Defaults to "Delete" — pass e.g. "Move to Trash" or "Delete Forever" to
+  // distinguish a soft-delete from a permanent one when reusing this same
+  // dialog for both (see Trash view).
+  confirmLabel?: string;
 }
 
 export function DeleteConfirmationDialog({
@@ -16,6 +20,7 @@ export function DeleteConfirmationDialog({
   onConfirm,
   onCancel,
   isDangerous = false,
+  confirmLabel = "Delete",
 }: DeleteConfirmationDialogProps) {
   if (!isOpen) return null;
 
@@ -40,7 +45,7 @@ export function DeleteConfirmationDialog({
                 : "bg-black text-[#f0f0f0] border border-[#2a2a2a] hover:bg-[#2a2a2a]"
             }`}
           >
-            Delete
+            {confirmLabel}
           </button>
         </div>
       </div>

@@ -6,11 +6,14 @@ import {
   createBoard,
   getBoardsByNotebook,
   updateBoard,
-  deleteBoard,
+  softDeleteBoard,
+  reorderBoards,
   getPDFsByNotebook,
   updatePDFDocument,
-  deletePDFDocument,
+  softDeletePDFDocument,
+  reorderPDFDocuments,
 } from "@/src/storage/db";
+import { reorderList } from "./dragReorder";
 import { importPdfFile } from "@/src/pdf/importPdf";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 
@@ -105,10 +108,10 @@ export function NotebookContents({ notebookId, onOpenItem }: NotebookContentsPro
     if (!deleteTarget) return;
     try {
       if (deleteTarget.type === "board") {
-        await deleteBoard(deleteTarget.id);
+        await softDeleteBoard(deleteTarget.id);
         setBoards(boards.filter((b) => b.id !== deleteTarget.id));
       } else {
-        await deletePDFDocument(deleteTarget.id);
+        await softDeletePDFDocument(deleteTarget.id);
         setPdfs(pdfs.filter((p) => p.id !== deleteTarget.id));
       }
     } catch (error) {
@@ -118,12 +121,42 @@ export function NotebookContents({ notebookId, onOpenItem }: NotebookContentsPro
     }
   };
 
+  const [draggedBoardId, setDraggedBoardId] = useState<string | null>(null);
+  const [draggedPdfId, setDraggedPdfId] = useState<string | null>(null);
+
+  const handleBoardDrop = async (targetId: string) => {
+    const draggedId = draggedBoardId;
+    setDraggedBoardId(null);
+    if (!draggedId || draggedId === targetId) return;
+    const reordered = reorderList(boards, draggedId, targetId);
+    setBoards(reordered);
+    try {
+      await reorderBoards(reordered.map((b) => b.id));
+    } catch (error) {
+      console.error("Failed to persist board order:", error);
+    }
+  };
+
+  const handlePdfDrop = async (targetId: string) => {
+    const draggedId = draggedPdfId;
+    setDraggedPdfId(null);
+    if (!draggedId || draggedId === targetId) return;
+    const reordered = reorderList(pdfs, draggedId, targetId);
+    setPdfs(reordered);
+    try {
+      await reorderPDFDocuments(reordered.map((p) => p.id));
+    } catch (error) {
+      console.error("Failed to persist PDF order:", error);
+    }
+  };
+
   const isEmpty = boards.length === 0 && pdfs.length === 0;
 
   const renderCard = (
     item: NotebookItemRef,
     name: string,
-    subtitle: string | null
+    subtitle: string | null,
+    drag: { onDragStart: () => void; onDrop: () => void }
   ) => {
     const isEditing = editing?.type === item.type && editing.id === item.id;
     if (isEditing) {
@@ -153,6 +186,13 @@ export function NotebookContents({ notebookId, onOpenItem }: NotebookContentsPro
       <div
         className="group relative p-4 bg-[#1c1c1e] border border-[#2a2a2a] rounded cursor-pointer hover:bg-[#202020] transition-colors"
         onClick={() => onOpenItem(item)}
+        draggable
+        onDragStart={drag.onDragStart}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          drag.onDrop();
+        }}
       >
         <p className="text-[#f0f0f0] text-xs truncate pr-10">{name}</p>
         {subtitle && (
@@ -252,7 +292,10 @@ export function NotebookContents({ notebookId, onOpenItem }: NotebookContentsPro
               <ul className="grid grid-cols-3 gap-3">
                 {boards.map((board) => (
                   <li key={board.id}>
-                    {renderCard({ type: "board", id: board.id }, board.name, null)}
+                    {renderCard({ type: "board", id: board.id }, board.name, null, {
+                      onDragStart: () => setDraggedBoardId(board.id),
+                      onDrop: () => handleBoardDrop(board.id),
+                    })}
                   </li>
                 ))}
               </ul>
@@ -266,7 +309,10 @@ export function NotebookContents({ notebookId, onOpenItem }: NotebookContentsPro
               <ul className="grid grid-cols-3 gap-3">
                 {pdfs.map((pdf) => (
                   <li key={pdf.id}>
-                    {renderCard({ type: "pdf", id: pdf.id }, pdf.name, pdf.fileName)}
+                    {renderCard({ type: "pdf", id: pdf.id }, pdf.name, pdf.fileName, {
+                      onDragStart: () => setDraggedPdfId(pdf.id),
+                      onDrop: () => handlePdfDrop(pdf.id),
+                    })}
                   </li>
                 ))}
               </ul>
@@ -280,12 +326,12 @@ export function NotebookContents({ notebookId, onOpenItem }: NotebookContentsPro
         title={deleteTarget?.type === "pdf" ? "Delete PDF" : "Delete Board"}
         message={
           deleteTarget?.type === "pdf"
-            ? "Delete this PDF and all its pages and markup? This cannot be undone."
-            : "Delete this board? This cannot be undone."
+            ? "Move this PDF to Trash? You can restore it later, or delete it permanently from Trash."
+            : "Move this board to Trash? You can restore it later, or delete it permanently from Trash."
         }
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTarget(null)}
-        isDangerous
+        confirmLabel="Move to Trash"
       />
     </div>
   );

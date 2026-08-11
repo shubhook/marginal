@@ -34,6 +34,11 @@ export interface PDFDocument {
   notebookId: string;
   name: string;
   fileName: string;
+  order: number; // Sort order within notebook (v4 — see data-model.md § Reordering)
+  // Soft-delete marker (v4 — see data-model.md § Trash). Null = not deleted.
+  // Set by softDeletePDFDocument, cleared by restorePDFDocument. The real
+  // cascade-delete only happens via permanentlyDeletePDFDocument.
+  deletedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -50,6 +55,8 @@ export interface Board {
   notebookId: string;
   name: string;
   order: number;
+  // Soft-delete marker (v4 — see data-model.md § Trash). Null = not deleted.
+  deletedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -58,6 +65,8 @@ export interface Notebook {
   id: string;
   name: string;
   order: number;
+  // Soft-delete marker (v4 — see data-model.md § Trash). Null = not deleted.
+  deletedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }

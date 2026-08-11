@@ -105,15 +105,20 @@ Sidebar mounts
 ```
 RootLayout
 └── AppContainer (client-only, mounted after hydration)
-     ├── Sidebar (notebook list, CRUD)
-     │   ├── collapsed: icon rail (new-notebook, switcher popover, expand toggle)
-     │   ├── expanded: full list (create/rename/delete) + switcher popover
-     │   └── DeleteConfirmationDialog (overlay)
-     └── Main surface (state-driven: notebook → contents → item)
+     ├── Sidebar (notebook list, CRUD, + Trash nav entry — v4)
+     │   ├── collapsed: icon rail (new-notebook, switcher popover, expand toggle, trash)
+     │   ├── expanded: full list (create/rename/delete) + switcher popover + trash footer entry
+     │   └── DeleteConfirmationDialog (overlay — soft-deletes, per § Trash below)
+     └── Main surface (state-driven: showTrash → notebook → contents → item)
+         ├── (showTrash) → TrashView (v4 — flat list of soft-deleted
+         │    │  Notebooks/Boards/PDFDocuments, Restore + Delete Forever
+         │    │  per item, reuses DeleteConfirmationDialog for the
+         │    │  permanent-delete confirmation — see data-model.md § Trash)
          ├── (no notebook selected) → empty state
          ├── (notebook selected, nothing open) → NotebookContents
          │    │  (boards + PDFs together: create board, import PDF,
-         │    │   rename/delete either — per UI navigation model)
+         │    │   rename/soft-delete either, drag-to-reorder either — per
+         │    │   UI navigation model)
          │    └── DeleteConfirmationDialog (overlay)
          ├── (board open) → Editor
          │    └── tldraw instance (persistenceKey `board-${boardId}`,
@@ -124,7 +129,8 @@ RootLayout
                    │    tabs are a plain UI control now, not a second
                    │    mounted panel: switching tabs writes
                    │    `activeCanvasId` and toggles which tagged shapes
-                   │    are visible, same store, no remount)
+                   │    are visible, same store, no remount; tabs also
+                   │    support drag-to-reorder — v4)
                    └── PageMarkupEditor
                         └── single tldraw instance (persistenceKey
                             `page-${pageId}`, tldraw's own stock
@@ -303,6 +309,14 @@ const handleMount = (editor: Editor) => {
 **Effect on cross-layer drawing.** With both panels' cameras permanently fixed post-mount, `editor.screenToPage()` on either side is now a deterministic, unchanging conversion for the life of the app — not just for the duration of one drag. The §4 accepted limitation (cross-boundary strokes separating after a pan/zoom) is gone as a structural consequence, not a special case handled in the stroke-splitting code — `crossLayerDrawing.ts` needed no logic changes, only a comment update, since it already converted through each editor's live camera at read-time and never had bespoke "handle a moving camera" branching to remove.
 
 **Spillover-clearing investigation.** The task that authorized this pass also reported canvas-tab switching not correctly clearing a previous canvas's spillover from the PDF page (additive rather than swapped). Investigated thoroughly — `addTestSpillover`-created shapes and real cross-layer strokes, single-canvas and multi-canvas, switching forward and backward, and via the "new canvas" creation flow — and could not reproduce it against the current codebase; `applySpilloverVisibility` (`spillover.ts`) correctly hid the previously-active canvas's tagged shapes and showed only the newly-active one's in every scenario tried, confirmed both via screenshot and direct IndexedDB inspection. The likely explanation: this was a downstream symptom of the stuck-drag bug from the previous fix pass (see § Fix Pass — Stuck Drag State & Untagged Segments above) — a cross-boundary drag that never completed produced an untagged plain shape rather than a `meta.canvasId`-tagged one, and an untagged shape is *correctly* always-visible (indistinguishable from ordinary direct markup), which would look exactly like "spillover that never clears." No code change was made for this specific report beyond the drag-tracking fix already shipped in the previous pass; documenting this here rather than silently closing it, per AGENTS.md §7 — if this recurs against freshly-created (post-fix) content, it's a new, different bug from what was described.
+
+## Trash & Reordering (v4, 2026-08-11)
+
+**Trash.** Deleting a Notebook/Board/PDFDocument from normal UI now soft-deletes it (`softDelete*` in `src/storage/db.ts`, sets `deletedAt`) instead of the old direct hard-delete — the row survives, filtered out of every normal list/query function (`getNotebooksList`, `getBoardsByNotebook`, `getPDFsByNotebook`, `searchAll`). A new `TrashView` component (mounted by `AppContainer` in place of the normal notebook/contents surface when its `showTrash` state is set, toggled via a new Sidebar nav entry) lists everything soft-deleted via `getTrashedItems()`, with Restore and "Delete Forever" per item — the latter reuses `DeleteConfirmationDialog`, the same component NotebookContents/Sidebar already used for the old hard-delete confirmation. See [Data Model § Trash](./data-model.md#trash-soft-delete--added-v4-2026-08-11) for the full cascade/restore/permanent-delete semantics, the Page/Canvas decision (they stay hard-delete-only), and the retention policy (no auto-expiry).
+
+The pre-v4 hard-delete functions (`deleteNotebook`/`deleteBoard`/`deletePDFDocument`) are renamed to `permanentlyDeleteNotebook`/`permanentlyDeleteBoard`/`permanentlyDeletePDFDocument` — same logic, unchanged, only reachable from `TrashView` now (plus one internal caller: `src/pdf/importPdf.ts` still calls `permanentlyDeletePDFDocument` directly to clean up a half-imported PDF on failure, since there's nothing there worth recovering through Trash).
+
+**Reordering.** Boards/PDFDocuments (within a Notebook, in `NotebookContents.tsx`) and Canvas tabs (within a Page, in `PDFViewer.tsx`'s `CanvasTabBar`) support native HTML5 drag-and-drop reordering — no drag library added. A shared pure helper (`reorderList()` in `app/components/dragReorder.ts`) computes the new in-memory array order on drop; `reorderBoards`/`reorderPDFDocuments`/`reorderCanvases` (`src/storage/db.ts`) persist it by reassigning sequential `order` values in a single transaction. See [Data Model § Reordering](./data-model.md#reordering--added-v4-2026-08-11).
 
 ## Storage Architecture
 

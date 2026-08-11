@@ -6,7 +6,7 @@ import {
   createNotebook,
   getNotebooksList,
   updateNotebook,
-  deleteNotebook,
+  softDeleteNotebook,
 } from "@/src/storage/db";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
 import { isModKey, isTypingTarget } from "./keyboardShortcuts";
@@ -14,13 +14,20 @@ import { isModKey, isTypingTarget } from "./keyboardShortcuts";
 interface SidebarProps {
   onSelectNotebook?: (notebookId: string | null) => void;
   activeNotebookId?: string | null;
+  onOpenTrash?: () => void;
+  trashActive?: boolean;
 }
 
 // Pure UI preference, not app data — same pattern as the split-pane width
 // (docs/ui-interaction.md § Bounded Panel & Resizable Split).
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "marginal:sidebarCollapsed";
 
-export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
+export function Sidebar({
+  onSelectNotebook,
+  activeNotebookId,
+  onOpenTrash,
+  trashActive,
+}: SidebarProps) {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -134,7 +141,7 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
     if (!deleteConfirmationId) return;
 
     try {
-      await deleteNotebook(deleteConfirmationId);
+      await softDeleteNotebook(deleteConfirmationId);
       const updatedNotebooks = notebooks.filter((nb) => nb.id !== deleteConfirmationId);
       setNotebooks(updatedNotebooks);
 
@@ -215,6 +222,17 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
             }`}
           >
             ☰
+          </button>
+          <button
+            onClick={onOpenTrash}
+            title="Trash"
+            className={`w-8 h-8 flex items-center justify-center rounded text-xs mt-auto ${
+              trashActive
+                ? "bg-[#2a2a2a] text-[#f0f0f0]"
+                : "text-[#8a8a8a] hover:text-[#f0f0f0] hover:bg-[#252525]"
+            }`}
+          >
+            🗑
           </button>
         </div>
         {switcherPopover}
@@ -318,17 +336,29 @@ export function Sidebar({ onSelectNotebook, activeNotebookId }: SidebarProps) {
       </div>
 
       {/* Footer */}
-      <div className="p-4 border-t border-[#2a2a2a] text-[#8a8a8a] text-xs">
-        {notebooks.length} notebook{notebooks.length !== 1 ? "s" : ""}
+      <div className="border-t border-[#2a2a2a]">
+        <button
+          onClick={onOpenTrash}
+          className={`w-full text-left px-4 py-2 text-xs flex items-center gap-2 ${
+            trashActive
+              ? "bg-[#2a2a2a] text-[#f0f0f0]"
+              : "text-[#8a8a8a] hover:bg-[#252525] hover:text-[#f0f0f0]"
+          }`}
+        >
+          🗑 Trash
+        </button>
+        <div className="px-4 py-2 text-[#8a8a8a] text-xs">
+          {notebooks.length} notebook{notebooks.length !== 1 ? "s" : ""}
+        </div>
       </div>
 
       <DeleteConfirmationDialog
         isOpen={deleteConfirmationId !== null}
         title="Delete Notebook"
-        message="Delete this notebook? This cannot be undone."
+        message="Move this notebook to Trash? You can restore it later, or delete it permanently from Trash."
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteConfirmationId(null)}
-        isDangerous
+        confirmLabel="Move to Trash"
       />
     </div>
   );
