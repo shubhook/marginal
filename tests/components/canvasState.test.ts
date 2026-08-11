@@ -6,7 +6,7 @@ import {
   idsTaggedWithCanvas,
   tagShapeMeta,
   withSavedCamera,
-} from "./canvasState";
+} from "../../app/components/canvasState";
 
 function makeCanvas(overrides: Partial<Canvas> & { id: string }): Canvas {
   return {

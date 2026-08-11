@@ -8,7 +8,7 @@ import {
   applyZoom,
   applyPan,
   resetTransform,
-} from "./coordinates";
+} from "../../src/canvas/coordinates";
 
 // Mock DOMRect for Node.js environment
 class MockDOMRect {

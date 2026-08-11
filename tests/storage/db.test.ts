@@ -19,14 +19,14 @@ import {
   createPage,
   db,
   deleteCanvas,
-  deleteNotebook,
-  deletePDFDocument,
+  permanentlyDeleteNotebook,
+  permanentlyDeletePDFDocument,
   deletePage,
   getCanvasesByPage,
   getPage,
   savePDFFile,
   setActiveCanvas,
-} from "./db";
+} from "../../src/storage/db";
 
 beforeEach(async () => {
   await Promise.all(db.tables.map((table) => table.clear()));
@@ -69,7 +69,7 @@ async function tldrawStoreExists(persistenceKey: string): Promise<boolean> {
   return databases.some((d) => d.name === `${TLDRAW_DB_PREFIX}${persistenceKey}`);
 }
 
-describe("deleteNotebook cascade", () => {
+describe("permanentlyDeleteNotebook cascade", () => {
   test("removes the notebook's Board, PDFDocument, Page, Canvas rows and their tldraw stores, with zero orphans", async () => {
     const notebook = await createNotebook("Test Notebook");
     const board = await createBoard(notebook.id, "Test Board");
@@ -83,7 +83,7 @@ describe("deleteNotebook cascade", () => {
     await createFakeTldrawStore(`page-${page.id}`);
     await createFakeTldrawStore(`canvas-${canvas0.id}`);
 
-    await deleteNotebook(notebook.id);
+    await permanentlyDeleteNotebook(notebook.id);
 
     expect(await db.notebooks.get(notebook.id)).toBeUndefined();
     expect(await db.boards.get(board.id)).toBeUndefined();
@@ -104,7 +104,7 @@ describe("deleteNotebook cascade", () => {
     const survivorBoard = await createBoard(survivor.id, "Keep me");
     await createBoard(doomed.id, "Delete me");
 
-    await deleteNotebook(doomed.id);
+    await permanentlyDeleteNotebook(doomed.id);
 
     expect(await db.notebooks.get(survivor.id)).toBeDefined();
     expect(await db.boards.get(survivorBoard.id)).toBeDefined();
@@ -112,7 +112,7 @@ describe("deleteNotebook cascade", () => {
   });
 });
 
-describe("deletePDFDocument cascade", () => {
+describe("permanentlyDeletePDFDocument cascade", () => {
   test("removes Pages and Canvases and their tldraw stores, with zero orphans", async () => {
     const notebook = await createNotebook("Test Notebook");
     const pdf = await createPDFDocument(notebook.id, "Test PDF", "test.pdf");
@@ -126,7 +126,7 @@ describe("deletePDFDocument cascade", () => {
     await createFakeTldrawStore(`page-${pageB.id}`);
     await createFakeTldrawStore(`canvas-${canvasA.id}`);
 
-    await deletePDFDocument(pdf.id);
+    await permanentlyDeletePDFDocument(pdf.id);
 
     expect(await db.pdfDocuments.get(pdf.id)).toBeUndefined();
     expect(await db.pdfFiles.get(pdf.id)).toBeUndefined();

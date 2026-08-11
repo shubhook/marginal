@@ -19,9 +19,11 @@ import {
   getPDFDocument,
   getPage,
   getPagesByPDF,
+  reorderCanvases,
   setActiveCanvas,
   updateCanvas,
 } from "@/src/storage/db";
+import { reorderList } from "./dragReorder";
 import { renderPageBitmap } from "@/src/pdf/renderer";
 import { applySpilloverVisibility, removeSpilloverForCanvas } from "./spillover";
 import { cameraToRestore, tagShapeMeta, withSavedCamera, type CameraSnapshot } from "./canvasState";
@@ -263,6 +265,17 @@ function PageShell({
     }
   };
 
+  const handleReorderCanvases = async (draggedId: string, targetId: string) => {
+    const reordered = reorderList(canvases, draggedId, targetId);
+    if (reordered === canvases) return;
+    setCanvases(reordered);
+    try {
+      await reorderCanvases(reordered.map((c) => c.id));
+    } catch (error) {
+      console.error("Failed to persist canvas tab order:", error);
+    }
+  };
+
   const cycleCanvas = (direction: 1 | -1) => {
     if (canvases.length <= 1) return;
     const currentIndex = canvases.findIndex((c) => c.id === activeCanvasId);
@@ -344,6 +357,7 @@ function PageShell({
           onCreate={handleCreate}
           onRename={handleRename}
           onDelete={handleDelete}
+          onReorder={handleReorderCanvases}
         />
         <div className="flex items-center gap-1 pl-3 ml-1 border-l border-[#2a2a2a] shrink-0">
           {pageEditor && (
@@ -382,12 +396,14 @@ interface CanvasTabBarProps {
   onCreate: () => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onReorder: (draggedId: string, targetId: string) => void;
 }
 
 // Tab bar rendered in PageShell's header row, right-aligned next to the PDF
 // page nav. Tabs no longer mount/unmount an editor — clicking one just
 // changes activeCanvasId and toggles which tagged shapes are visible in the
-// single shared page store (see spillover.ts).
+// single shared page store (see spillover.ts). Drag-to-reorder uses the same
+// native HTML5 DnD pattern as the Board/PDF cards in NotebookContents.tsx.
 function CanvasTabBar({
   canvases,
   activeCanvasId,
@@ -395,10 +411,12 @@ function CanvasTabBar({
   onCreate,
   onRename,
   onDelete,
+  onReorder,
 }: CanvasTabBarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
 
   const startEdit = (canvas: Canvas) => {
     setEditingId(canvas.id);
@@ -420,6 +438,15 @@ function CanvasTabBar({
             className={`group relative shrink-0 h-full flex items-center border-b-2 ${
               isActive ? "border-[#f0f0f0]" : "border-transparent"
             }`}
+            draggable={editingId !== canvas.id}
+            onDragStart={() => setDraggedId(canvas.id)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const dragged = draggedId;
+              setDraggedId(null);
+              if (dragged && dragged !== canvas.id) onReorder(dragged, canvas.id);
+            }}
           >
             {editingId === canvas.id ? (
               <input

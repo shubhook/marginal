@@ -26,6 +26,7 @@ interface Notebook {
   id: string;                // Unique identifier
   name: string;              // Display name (editable)
   order: number;             // Sort order in sidebar
+  deletedAt: number | null;  // Soft-delete marker (v4) — see § Trash
   createdAt: number;         // Unix timestamp (ms)
   updatedAt: number;         // Last modification time
 }
@@ -34,13 +35,15 @@ interface Notebook {
 **Invariants:**
 - Every notebook has a unique ID
 - Name can be empty string (though UI should prevent this)
-- Order is user-controlled (sidebar drag-to-reorder, future feature)
+- Order is user-controlled (sidebar drag-to-reorder — see § Reordering)
 
 **Lifecycle:**
-- Create: `createNotebook(name)` → returns Notebook
-- Read: `getNotebook(id)` or `getNotebooksList()` → all notebooks ordered by order field
+- Create: `createNotebook(name)` → returns Notebook, `deletedAt: null`
+- Read: `getNotebook(id)` (any state) or `getNotebooksList()` → non-deleted notebooks ordered by order field
 - Update: `updateNotebook(id, updates)` → patch fields, auto-updates `updatedAt`
-- Delete: `deleteNotebook(id)` → cascades to all Boards and PDFDocuments
+- Soft-delete: `softDeleteNotebook(id)` → sets `deletedAt`, cascades the same timestamp to any not-already-deleted child Boards/PDFDocuments — see § Trash
+- Restore: `restoreNotebook(id)` → clears `deletedAt`, cascades restore to children soft-deleted at the same timestamp
+- Permanently delete: `permanentlyDeleteNotebook(id)` → the real cascade-delete (removes Boards, PDFDocuments, Pages, Canvases, pdfFiles, and every associated tldraw store) — only reachable from the Trash view
 
 ### Board
 
@@ -52,6 +55,7 @@ interface Board {
   notebookId: string;        // Parent notebook
   name: string;              // Display name (editable)
   order: number;             // Sort order within notebook
+  deletedAt: number | null;  // Soft-delete marker (v4) — see § Trash
   createdAt: number;
   updatedAt: number;
 }
@@ -59,13 +63,16 @@ interface Board {
 
 **Invariants:**
 - Every board belongs to exactly one notebook
-- Order field allows future reordering within notebook
+- Order field is user-controlled (drag-to-reorder — see § Reordering)
 
 **Lifecycle:**
-- Create: `createBoard(notebookId, name)` → new board, next order value
-- Read: `getBoard(id)` or `getBoardsByNotebook(notebookId)` → ordered by order
+- Create: `createBoard(notebookId, name)` → new board, next order value, `deletedAt: null`
+- Read: `getBoard(id)` (any state) or `getBoardsByNotebook(notebookId)` → non-deleted boards ordered by order
 - Update: `updateBoard(id, updates)` → rename, change order
-- Delete: `deleteBoard(id)` → removes the board row **and** its tldraw store (`board-${id}`), so strokes don't orphan
+- Reorder: `reorderBoards(orderedIds)` → reassigns sequential `order` values in the given order
+- Soft-delete: `softDeleteBoard(id)` → sets `deletedAt` (no children to cascade to — a Board's content lives entirely in its own tldraw store, not as Dexie rows)
+- Restore: `restoreBoard(id)` → clears `deletedAt`
+- Permanently delete: `permanentlyDeleteBoard(id)` → removes the board row **and** its tldraw store (`board-${id}`), so strokes don't orphan — only reachable from the Trash view
 
 **Implementation status:** fully wired as of 2026-08-04 — `app/components/BoardList.tsx` renders when a Notebook is selected (create/rename/delete boards), and `app/components/Editor.tsx` mounts a tldraw instance scoped to `board-${boardId}` only once a specific board is opened. (An earlier revision skipped this — the Editor mounted directly off `notebookId`, collapsing Notebook→Board→Canvas into Notebook→Canvas. See [Architecture](./architecture.md#component-tree) for the corrected component tree.)
 
@@ -82,6 +89,8 @@ interface PDFDocument {
   notebookId: string;        // Parent notebook
   name: string;              // Display name (editable)
   fileName: string;          // Original file name (for download/export)
+  order: number;             // Sort order within notebook (v4) — see § Reordering
+  deletedAt: number | null;  // Soft-delete marker (v4) — see § Trash
   createdAt: number;
   updatedAt: number;
 }
@@ -90,12 +99,16 @@ interface PDFDocument {
 **Invariants:**
 - Every PDF belongs to exactly one notebook
 - fileName preserved for export/reference (not currently used)
+- Order field is user-controlled (drag-to-reorder — see § Reordering); before v4, PDFs were listed by `createdAt` instead — the v4 migration backfills `order` from existing creation order so the first reorder has a sane starting point
 
 **Lifecycle:**
-- Create: `createPDFDocument(notebookId, name, fileName)` → new PDF, initially no pages
-- Read: `getPDFDocument(id)` or `getPDFsByNotebook(notebookId)`
+- Create: `createPDFDocument(notebookId, name, fileName)` → new PDF, initially no pages, next order value, `deletedAt: null`
+- Read: `getPDFDocument(id)` (any state) or `getPDFsByNotebook(notebookId)` → non-deleted PDFs ordered by order
 - Update: `updatePDFDocument(id, updates)` → rename
-- Delete: `deletePDFDocument(id)` → cascades to all Pages and Canvases
+- Reorder: `reorderPDFDocuments(orderedIds)` → reassigns sequential `order` values in the given order
+- Soft-delete: `softDeletePDFDocument(id)` → sets `deletedAt`. Its Pages/Canvases are **not** touched — see § Trash — Page and Canvas decision
+- Restore: `restorePDFDocument(id)` → clears `deletedAt`
+- Permanently delete: `permanentlyDeletePDFDocument(id)` → the real cascade-delete (Pages, Canvases, pdfFiles, tldraw stores) — only reachable from the Trash view
 
 **Content storage:**
 - PDF file: raw bytes in the `pdfFiles` table (see below), keyed by `pdfDocumentId`
@@ -146,7 +159,7 @@ interface Page {
 - Create: `createPage(pdfDocumentId, pageNumber, width, height)` → auto-creates Canvas 0 as active
 - Read: `getPage(id)` or `getPagesByPDF(pdfDocumentId)` → ordered by pageNumber
 - Update: `updatePage(id, updates)` → only updates activeCanvasId (to switch which canvas's spillover shows)
-- Delete: `deletePage(id)` → cascades to all Canvases
+- Delete: `deletePage(id)` → cascades to all Canvases. Hard-delete only — Page does **not** get a `deletedAt` field; see § Trash — Page and Canvas decision
 
 **Content storage:**
 - Direct markup: strokes live in the page's own tldraw store (persistenceKey `page-${pageId}`), in PDF-page coordinates — see [Architecture § PDF Rendering](./architecture.md#pdf-rendering--direct-markup-surface-2). Deleted along with the page (`deletePage`/cascades remove the tldraw store too).
@@ -180,7 +193,7 @@ interface Canvas {
 - Exactly one canvas per page has `isActive: true`
 - `lastCameraPosition` is `null` only for a canvas that's never been the active one
 
-**Lifecycle:** unchanged — `createCanvas`, `createCanvasAndActivate`, `getCanvas`/`getCanvasesByPage`, `updateCanvas`, `setActiveCanvas`, `deleteCanvas`. `setActiveCanvas` now additionally reads the target canvas's `lastCameraPosition` and, if non-null, applies it via `editor.setCamera()`; if null (first visit), leave the camera wherever it currently is.
+**Lifecycle:** `createCanvas`, `createCanvasAndActivate`, `getCanvas`/`getCanvasesByPage`, `updateCanvas`, `setActiveCanvas`, `deleteCanvas`. `setActiveCanvas` reads the target canvas's `lastCameraPosition` and, if non-null, applies it via `editor.setCamera()`; if null (first visit), leave the camera wherever it currently is. `reorderCanvases(orderedIds)` (v4 — see § Reordering) reassigns sequential `order` values for a page's canvas tabs, same pattern as `reorderBoards`/`reorderPDFDocuments`. `deleteCanvas` is hard-delete only — Canvas does **not** get a `deletedAt` field; see § Trash — Page and Canvas decision.
 
 **Content storage:**
 - There is exactly one tldraw store per Page (`page-${pageId}`). Every shape drawn — former "direct markup," former "spillover" — lives in this single store as an ordinary tldraw shape.
@@ -194,6 +207,30 @@ interface Canvas {
 
 A prior architecture (two separate tldraw instances — PDF panel and linked-canvas panel) required splitting a drawn stroke into two linked segments at the panel boundary. This is no longer applicable: with a single shared canvas per page (see [Canvas](#canvas)), there is no panel boundary and no coordinate-space mismatch to reconcile. A stroke drawn across what used to be the panel divider is now just one ordinary shape, tagged with whichever canvas is active — same as any other markup.
 
+## Trash (Soft-Delete) — added v4 (2026-08-11)
+
+Notebook, Board, and PDFDocument each carry a `deletedAt: number | null` field. Deleting one of these three from normal UI (Sidebar, `NotebookContents`) sets `deletedAt` to the current timestamp instead of removing the row — the item disappears from every normal list/query (`getNotebooksList`, `getBoardsByNotebook`, `getPDFsByNotebook`, `searchAll`) but still exists, listed instead in the Trash view (`getTrashedItems()`).
+
+**Cascade on delete:** soft-deleting a Notebook also soft-deletes (with the identical timestamp) any of its Boards/PDFDocuments that aren't already trashed. Soft-deleting a Board or PDFDocument on its own has no further cascade — see § Page and Canvas decision below.
+
+**Restore:** `restoreNotebook`/`restoreBoard`/`restorePDFDocument` clear `deletedAt`. Restoring a Notebook also restores any child whose `deletedAt` matches the Notebook's own (i.e. was cascade-deleted alongside it) — a child that was trashed independently, before or after, keeps its own trashed state and isn't pulled back by the parent's restore. (Matching is millisecond-precision — see the comment on `softDeleteNotebook` in `src/storage/db.ts` for the one theoretical edge case this doesn't cover, which requires two delete calls to land in the same millisecond and isn't reachable from two separate user actions.)
+
+**Permanent delete:** `permanentlyDeleteNotebook`/`permanentlyDeleteBoard`/`permanentlyDeletePDFDocument` are the real cascade-delete — identical to the pre-v4 `deleteNotebook`/`deleteBoard`/`deletePDFDocument` logic (rows removed, tldraw stores deleted), only reachable from the Trash view's "Delete Forever" action, reused as-is rather than rewritten.
+
+**Page and Canvas decision:** Page and Canvas deliberately do **not** get a `deletedAt` field or their own soft-delete/restore functions — `deletePage`/`deleteCanvas` remain hard-delete-only, unchanged by this milestone. When a PDFDocument is soft-deleted, its Pages/Canvases are left as ordinary, untouched rows — they simply become unreachable through normal UI (nothing queries them until the PDF is opened again, and a trashed PDF can't be opened), with no need for a parallel soft-delete concept two levels down. They're only actually removed when the PDFDocument is permanently deleted. Rationale: adding `deletedAt` to Page would collide with existing invariants (`activeCanvasId` must always point to a *live*, non-deleted Canvas; a page must always have at least one Canvas) that soft-deleting a Canvas would immediately violate — not worth the added complexity for a personal v1 tool. If accidental Page/Canvas deletion becomes a real problem in practice, revisit this decision explicitly (per AGENTS.md §7) rather than bolting on partial soft-delete support.
+
+**Retention policy:** items stay in Trash indefinitely until manually restored or permanently deleted — **no auto-expiry in v1.** Nothing purges Trash in the background; if it needs to happen automatically later (e.g. "auto-purge after 30 days"), that's a deliberate future decision, not an implicit default.
+
+**Trash view scope:** flat listing of every trashed Notebook/Board/PDFDocument, not nested under a (possibly also-trashed) parent — restoring a Board whose parent Notebook is still trashed leaves the Board "live" but practically unreachable in normal UI until the Notebook is restored too, same as the parent/child relationship works everywhere else in this schema. This is a deliberate simplicity tradeoff (see AGENTS.md §1), not an oversight.
+
+## Reordering — added v4 (2026-08-11)
+
+Boards and PDFDocuments (within a Notebook) and Canvas tabs (within a Page) support drag-to-reorder. All three use the same lightweight persistence approach: on drop, `reorderBoards`/`reorderPDFDocuments`/`reorderCanvases` reassign sequential `order` values (`1..n`) to the full list in its new order, one Dexie `update` per item inside a single transaction. No fractional-index insertion — simpler to implement correctly, and correct enough at v1's data volumes (a notebook's board/PDF count, or a page's canvas count, is never large).
+
+`PDFDocument.order` is new in v4 — PDFs were previously listed by `createdAt` (no reordering existed). The v4 migration backfills `order` from each PDF's existing `createdAt`-sorted position, so the very first reorder starts from the same order the user already saw.
+
+Drag-and-drop itself is native HTML5 DnD (`draggable`, `onDragStart`/`onDragOver`/`onDrop`) — no drag-and-drop library added, per AGENTS.md §1 ("if a choice trades simplicity for flexibility nobody asked for, take simplicity"). The pure array-splice logic (`reorderList()` in `app/components/dragReorder.ts`) is shared between `NotebookContents.tsx` (Boards/PDFs) and `PDFViewer.tsx`'s `CanvasTabBar` (Canvas tabs).
+
 ## Indexing & Queries
 
 Dexie indexes for efficient queries:
@@ -202,10 +239,12 @@ Dexie indexes for efficient queries:
 |-------|-------------|---------|---------|
 | notebooks | id | order, createdAt | List all, sort by order |
 | boards | id | notebookId, order, createdAt | Get boards in notebook |
-| pdfDocuments | id | notebookId, createdAt | Get PDFs in notebook |
+| pdfDocuments | id | notebookId, order, createdAt | Get PDFs in notebook |
 | pdfFiles | pdfDocumentId | — | Raw PDF bytes, fetched once per session (v2) |
 | pages | id | pdfDocumentId, pageNumber, createdAt | Get pages in PDF |
 | canvases | id | pageId, order, createdAt | Get canvases for page |
+
+`deletedAt` (notebooks/boards/pdfDocuments, v4) is deliberately **not** indexed — filtered in memory after the indexed query runs (`.filter(row => row.deletedAt == null)`), same pattern `searchAll` already used for full-table reads. Not worth a dedicated index at v1's data volume; see AGENTS.md §1.
 
 ## Storage Layer
 

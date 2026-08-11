@@ -244,6 +244,31 @@ See [Architecture](./architecture.md) — the Coordinate Spaces, Component Tree,
 
 **Acceptance criteria:** export respects tag-based visibility, every new shortcut is collision-free against tldraw's real native bindings, name search + jump-to works, no regressions — all met per Verification above.
 
+### 7. Trash & Reordering ✅ (Complete — 2026-08-11)
+
+**Purpose:** the Future Scope table below had "Trash/Recently Deleted" pending since Foundation, triggered by "accidental deletions become a real problem"; combined with manual reordering (previously not built at all — Boards/PDFs listed by `createdAt`, Canvas tabs by creation order, neither user-changeable) since both are small, related Dexie-layer + list-UI changes.
+
+**Deliverables:**
+- Soft-delete (Trash) for Notebook, Board, PDFDocument — `deletedAt: number | null` (Dexie v4), `softDelete*`/`restore*`/`permanentlyDelete*` per entity, cascade on delete/restore between Notebook and its Boards/PDFDocuments ✅
+- Page and Canvas explicitly stay hard-delete-only (decision documented, not left implicit) — see [Data Model § Trash — Page and Canvas decision](./data-model.md#trash-soft-delete--added-v4-2026-08-11) ✅
+- Trash view (`app/components/TrashView.tsx`) — flat list of every trashed item, Restore + Delete Forever per item, Delete Forever reuses `DeleteConfirmationDialog` ✅
+- Sidebar nav entry to open Trash (both expanded and collapsed rail) ✅
+- Drag-to-reorder Boards/PDFs within a Notebook (`NotebookContents.tsx`) and Canvas tabs within a Page (`PDFViewer.tsx`'s `CanvasTabBar`) — native HTML5 DnD, no library added ✅
+- `PDFDocument.order` added (Dexie v4, backfilled from existing `createdAt` order) — PDFs previously had no `order` field at all ✅
+
+**Data model changes:**
+- Dexie **version 4**: `deletedAt: number | null` added to notebooks/boards/pdfDocuments (backfilled `null`); `order: number` added to pdfDocuments (backfilled from `createdAt` order). See [Data Model § Trash](./data-model.md#trash-soft-delete--added-v4-2026-08-11) and [§ Reordering](./data-model.md#reordering--added-v4-2026-08-11).
+- Renamed the old hard-delete functions to `permanentlyDeleteNotebook`/`permanentlyDeleteBoard`/`permanentlyDeletePDFDocument` (logic unchanged) — every prior call site updated (Sidebar/NotebookContents now call `softDelete*`; `src/pdf/importPdf.ts`'s failed-import cleanup still calls `permanentlyDeletePDFDocument` directly, since a half-imported doc has nothing worth recovering through Trash).
+
+**Acceptance Criteria:**
+- ✓ Soft-deleting a Notebook containing Boards and a PDF hides it (and them) from normal lists, all appear in Trash
+- ✓ Restoring it brings the Notebook and its cascade-deleted children back, with content intact
+- ✓ Permanently deleting a trashed item does a real cascade-delete — zero orphaned rows/stores (verified via `tests/storage/trash.test.ts`, same standard as the pre-existing `db.test.ts` cascade coverage)
+- ✓ Drag-reordering Boards/PDFs in a notebook, and Canvas tabs on a page, persists across reload
+- ✓ Regression: Canvas/Page hard-delete (unaffected by this milestone) still works; all prior surfaces spot-checked
+
+**Verification (2026-08-11):** `bun test` — 54 tests across 6 files (coordinates, canvasState, db, plus new `trash.test.ts` and `reorder.test.ts`), all passing. `bunx tsc --noEmit` and `bun run build` both clean.
+
 ## Branching & Commits
 
 - **One milestone per branch** (or one major feature within a milestone)
@@ -256,6 +281,7 @@ See [Architecture](./architecture.md) — the Coordinate Spaces, Component Tree,
 - **Unit tests** for isolated concerns (coordinate transforms, math functions)
 - **Manual verification** for UI/UX (the app must feel good to use daily)
 - **Regression spot-checks** at end of each milestone (verify previous surfaces still work)
+- Test files live under `tests/`, mirroring `src/`/`app/components/` structure (one test file per module under test) — not colocated with source, as of the pre-Trash/Reorder test-reorganization pass. Run via `bun test` (or the `test`/`test:watch` npm scripts). See `tests/README.md`.
 
 No strict test coverage target; focus on catching bugs in infrastructure (coordinates, data layer) via tests, and on catching UX bugs via manual use.
 
@@ -263,7 +289,7 @@ No strict test coverage target; focus on catching bugs in infrastructure (coordi
 
 | Feature | Trigger | Phase |
 |---------|---------|-------|
-| Trash/Recently Deleted | Accidental deletions become a real problem | Polish or Post-v1 |
+| ~~Trash/Recently Deleted~~ | ~~Accidental deletions become a real problem~~ | **Done** — see [§ Trash & Reordering](#7-trash--reordering--complete--2026-08-11) |
 | next-auth + Postgres backend | Multi-device access actually needed | Post-v1 |
 | Cross-device sync | Depends on backend | Post-v1 |
 | OCR | Tesseract.js as stopgap; API later | Post-v1 or Polish |

@@ -6,10 +6,12 @@ import { NotebookContents, type NotebookItemRef } from "./NotebookContents";
 import { Editor } from "./Editor";
 import { PDFViewer } from "./PDFViewer";
 import { SearchPalette } from "./SearchPalette";
+import { TrashView } from "./TrashView";
 
 export function AppContainer() {
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<NotebookItemRef | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
@@ -19,6 +21,7 @@ export function AppContainer() {
   const handleSelectNotebook = (notebookId: string | null) => {
     setActiveNotebookId(notebookId);
     setActiveItem(null); // switching notebooks always drops back to the contents list
+    setShowTrash(false);
   };
 
   // Render placeholder on server to avoid hydration mismatch
@@ -42,9 +45,16 @@ export function AppContainer() {
       <Sidebar
         activeNotebookId={activeNotebookId}
         onSelectNotebook={handleSelectNotebook}
+        onOpenTrash={() => {
+          setShowTrash(true);
+          setActiveItem(null);
+        }}
+        trashActive={showTrash}
       />
       <main className="flex-1 flex flex-col bg-[#121212]">
-        {!activeNotebookId ? (
+        {showTrash ? (
+          <TrashView />
+        ) : !activeNotebookId ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <p className="text-[#8a8a8a] text-sm mb-4">

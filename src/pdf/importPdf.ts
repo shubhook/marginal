@@ -4,7 +4,7 @@ import type { PDFDocument } from "@/src/storage/types";
 import {
   createPDFDocument,
   createPage,
-  deletePDFDocument,
+  permanentlyDeletePDFDocument,
   savePDFFile,
 } from "@/src/storage/db";
 import { getPdfjs } from "./pdfjs";
@@ -32,8 +32,9 @@ export async function importPdfFile(
       await createPage(doc.id, i - 1, viewport.width, viewport.height);
     }
   } catch (error) {
-    // Don't leave a half-imported document behind.
-    await deletePDFDocument(doc.id);
+    // Don't leave a half-imported document behind — a real cascade-delete,
+    // not a soft one (there's nothing here worth recovering from Trash).
+    await permanentlyDeletePDFDocument(doc.id);
     throw error;
   } finally {
     await loadingTask.destroy();

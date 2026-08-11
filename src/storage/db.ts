@@ -39,6 +39,37 @@ export class MarginalDB extends Dexie {
             canvas.lastCameraPosition = null;
           });
       });
+    // v4: Trash (soft-delete) + reordering — see data-model.md § Trash and
+    // § Reordering. `deletedAt` added to notebooks/boards/pdfDocuments
+    // (backfilled to null — nothing is deleted by this migration). Only
+    // pdfDocuments' index string actually changes here (new `order` field,
+    // backfilled from existing createdAt order, matching how Boards already
+    // work) — notebooks/boards keep their v1 index shape, but the upgrade
+    // callback still touches all three tables via `tx.table(...)`, which
+    // Dexie makes available regardless of which stores are redeclared in
+    // this version's `.stores()` call (same pattern v3 used for canvases).
+    this.version(4)
+      .stores({
+        pdfDocuments: "id, notebookId, order, createdAt",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("notebooks")
+          .toCollection()
+          .modify((notebook) => {
+            notebook.deletedAt = null;
+          });
+        await tx
+          .table("boards")
+          .toCollection()
+          .modify((board) => {
+            board.deletedAt = null;
+          });
+        const pdfs = await tx.table("pdfDocuments").orderBy("createdAt").toArray();
+        for (let i = 0; i < pdfs.length; i++) {
+          await tx.table("pdfDocuments").update(pdfs[i].id, { deletedAt: null, order: i + 1 });
+        }
+      });
   }
 }
 
@@ -77,6 +108,7 @@ export async function createNotebook(name: string): Promise<Notebook> {
     id,
     name,
     order,
+    deletedAt: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -89,8 +121,12 @@ export async function getNotebook(id: string): Promise<Notebook | undefined> {
   return db.notebooks.get(id);
 }
 
+// Excludes soft-deleted notebooks by default — see § Trash below.
 export async function getNotebooksList(): Promise<Notebook[]> {
-  return db.notebooks.orderBy("order").toArray();
+  return db.notebooks
+    .orderBy("order")
+    .filter((n) => n.deletedAt == null)
+    .toArray();
 }
 
 export async function updateNotebook(
@@ -103,7 +139,88 @@ export async function updateNotebook(
   });
 }
 
-export async function deleteNotebook(id: string): Promise<void> {
+// --- Trash (soft-delete) ---------------------------------------------------
+// See data-model.md § Trash for the full policy. Summary: deleting a
+// Notebook/Board/PDFDocument from normal UI sets `deletedAt` instead of
+// removing the row — restorable until someone explicitly purges it from the
+// Trash view (permanentlyDelete*), which reuses the real cascade-delete
+// logic below. Page and Canvas are NOT soft-deletable (see § Trash — Page
+// and Canvas decision) — they stay hard-delete-only, unaffected by any of
+// this; a soft-deleted PDFDocument's Pages/Canvases are simply left as
+// ordinary rows, unreachable through normal UI because their parent no
+// longer appears in it, and only actually removed by
+// permanentlyDeletePDFDocument.
+
+// Soft-deletes a Notebook and cascades the same soft-delete, with the same
+// timestamp, to any of its Boards/PDFDocuments that aren't already
+// soft-deleted — restoreNotebook uses that shared timestamp to know which
+// children to bring back along with it (and which to leave alone, because
+// they were independently trashed earlier/later). Matching is
+// millisecond-precision (Date.now()); an independent delete landing in the
+// exact same millisecond as a cascade would be mistaken for part of it, but
+// that's not reachable from two distinct user actions (button clicks), only
+// from calling both synchronously in code (e.g. a test) — acceptable for v1.
+export async function softDeleteNotebook(id: string): Promise<void> {
+  const now = Date.now();
+  const boards = await db.boards
+    .where("notebookId")
+    .equals(id)
+    .filter((b) => b.deletedAt == null)
+    .toArray();
+  const pdfs = await db.pdfDocuments
+    .where("notebookId")
+    .equals(id)
+    .filter((p) => p.deletedAt == null)
+    .toArray();
+
+  await db.transaction("rw", db.notebooks, db.boards, db.pdfDocuments, async () => {
+    await db.notebooks.update(id, { deletedAt: now, updatedAt: now });
+    for (const board of boards) {
+      await db.boards.update(board.id, { deletedAt: now, updatedAt: now });
+    }
+    for (const pdf of pdfs) {
+      await db.pdfDocuments.update(pdf.id, { deletedAt: now, updatedAt: now });
+    }
+  });
+}
+
+// Clears deletedAt on a trashed Notebook and cascades the restore to
+// whichever Boards/PDFDocuments were soft-deleted at the exact same moment
+// (i.e. cascaded alongside it, not independently trashed before/after).
+export async function restoreNotebook(id: string): Promise<void> {
+  const notebook = await db.notebooks.get(id);
+  if (!notebook || notebook.deletedAt == null) return;
+  const cascadeTimestamp = notebook.deletedAt;
+  const now = Date.now();
+
+  const boards = await db.boards
+    .where("notebookId")
+    .equals(id)
+    .filter((b) => b.deletedAt === cascadeTimestamp)
+    .toArray();
+  const pdfs = await db.pdfDocuments
+    .where("notebookId")
+    .equals(id)
+    .filter((p) => p.deletedAt === cascadeTimestamp)
+    .toArray();
+
+  await db.transaction("rw", db.notebooks, db.boards, db.pdfDocuments, async () => {
+    await db.notebooks.update(id, { deletedAt: null, updatedAt: now });
+    for (const board of boards) {
+      await db.boards.update(board.id, { deletedAt: null, updatedAt: now });
+    }
+    for (const pdf of pdfs) {
+      await db.pdfDocuments.update(pdf.id, { deletedAt: null, updatedAt: now });
+    }
+  });
+}
+
+// The real cascade-delete — removes rows and tldraw stores for good. This is
+// the old (pre-Trash) `deleteNotebook` logic, unchanged, now only reachable
+// from the Trash view. Grabs every Board/PDFDocument/Page/Canvas under the
+// notebook regardless of their own deletedAt state, since a permanent delete
+// must remove everything, trashed or not.
+export async function permanentlyDeleteNotebook(id: string): Promise<void> {
   // Collect the full subtree first so markup stores can be cleaned afterwards
   // (indexedDB.deleteDatabase can't run inside a Dexie transaction).
   const boards = await db.boards.where("notebookId").equals(id).toArray();
@@ -160,6 +277,7 @@ export async function createBoard(notebookId: string, name: string): Promise<Boa
     notebookId,
     name,
     order,
+    deletedAt: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -172,8 +290,10 @@ export async function getBoard(id: string): Promise<Board | undefined> {
   return db.boards.get(id);
 }
 
+// Excludes soft-deleted boards by default — see § Trash above.
 export async function getBoardsByNotebook(notebookId: string): Promise<Board[]> {
-  return db.boards.where("notebookId").equals(notebookId).sortBy("order");
+  const boards = await db.boards.where("notebookId").equals(notebookId).sortBy("order");
+  return boards.filter((b) => b.deletedAt == null);
 }
 
 export async function updateBoard(
@@ -186,7 +306,18 @@ export async function updateBoard(
   });
 }
 
-export async function deleteBoard(id: string): Promise<void> {
+// Boards have no soft-deletable children (a Board's content lives entirely
+// in its own tldraw store, not as Dexie rows) — soft-delete is just this row.
+export async function softDeleteBoard(id: string): Promise<void> {
+  await db.boards.update(id, { deletedAt: Date.now(), updatedAt: Date.now() });
+}
+
+export async function restoreBoard(id: string): Promise<void> {
+  await db.boards.update(id, { deletedAt: null, updatedAt: Date.now() });
+}
+
+// The real cascade-delete — old (pre-Trash) `deleteBoard` logic, unchanged.
+export async function permanentlyDeleteBoard(id: string): Promise<void> {
   await db.boards.delete(id);
   await deleteTldrawData(`board-${id}`);
 }
@@ -197,6 +328,7 @@ export async function createPDFDocument(
   name: string,
   fileName: string
 ): Promise<PDFDocument> {
+  const order = (await db.pdfDocuments.where("notebookId").equals(notebookId).count()) + 1;
   const now = Date.now();
   const id = `pdf_${now}_${Math.random().toString(36).substring(2, 9)}`;
 
@@ -205,6 +337,8 @@ export async function createPDFDocument(
     notebookId,
     name,
     fileName,
+    order,
+    deletedAt: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -217,8 +351,11 @@ export async function getPDFDocument(id: string): Promise<PDFDocument | undefine
   return db.pdfDocuments.get(id);
 }
 
+// Excludes soft-deleted PDFs by default — see § Trash above. Sorted by
+// `order` (v4) rather than `createdAt`, to support drag-to-reorder.
 export async function getPDFsByNotebook(notebookId: string): Promise<PDFDocument[]> {
-  return db.pdfDocuments.where("notebookId").equals(notebookId).sortBy("createdAt");
+  const pdfs = await db.pdfDocuments.where("notebookId").equals(notebookId).sortBy("order");
+  return pdfs.filter((p) => p.deletedAt == null);
 }
 
 export async function updatePDFDocument(
@@ -231,7 +368,22 @@ export async function updatePDFDocument(
   });
 }
 
-export async function deletePDFDocument(id: string): Promise<void> {
+// Soft-deletes a PDFDocument. Its Pages/Canvases are deliberately left
+// untouched — see § Trash — Page and Canvas decision above; they become
+// unreachable through normal UI (nothing queries them until the PDF is
+// opened again) without needing a deletedAt field of their own.
+export async function softDeletePDFDocument(id: string): Promise<void> {
+  await db.pdfDocuments.update(id, { deletedAt: Date.now(), updatedAt: Date.now() });
+}
+
+export async function restorePDFDocument(id: string): Promise<void> {
+  await db.pdfDocuments.update(id, { deletedAt: null, updatedAt: Date.now() });
+}
+
+// The real cascade-delete — old (pre-Trash) `deletePDFDocument` logic,
+// unchanged. Removes Pages/Canvases/pdfFiles regardless of anything, since
+// they were never soft-deleted in the first place.
+export async function permanentlyDeletePDFDocument(id: string): Promise<void> {
   const pages = await db.pages.where("pdfDocumentId").equals(id).toArray();
   const pageIds = pages.map((p) => p.id);
   const canvases = pageIds.length
@@ -256,6 +408,29 @@ export async function deletePDFDocument(id: string): Promise<void> {
   for (const canvas of canvases) {
     await deleteTldrawData(`canvas-${canvas.id}`);
   }
+}
+
+// Reordering — see data-model.md § Reordering. Lightweight approach:
+// reassign sequential 1..n `order` values in the given order, one Dexie
+// update per item in a single transaction. Simpler than fractional-index
+// insertion and correct enough at v1's data volumes (a notebook's board/PDF
+// count, or a page's canvas count, is never large).
+export async function reorderBoards(orderedIds: string[]): Promise<void> {
+  const now = Date.now();
+  await db.transaction("rw", db.boards, async () => {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.boards.update(orderedIds[i], { order: i + 1, updatedAt: now });
+    }
+  });
+}
+
+export async function reorderPDFDocuments(orderedIds: string[]): Promise<void> {
+  const now = Date.now();
+  await db.transaction("rw", db.pdfDocuments, async () => {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.pdfDocuments.update(orderedIds[i], { order: i + 1, updatedAt: now });
+    }
+  });
 }
 
 export async function savePDFFile(pdfDocumentId: string, data: ArrayBuffer): Promise<void> {
@@ -365,6 +540,17 @@ export async function getCanvas(id: string): Promise<Canvas | undefined> {
 
 export async function getCanvasesByPage(pageId: string): Promise<Canvas[]> {
   return db.canvases.where("pageId").equals(pageId).sortBy("order");
+}
+
+// Reorders a page's canvas tabs — same lightweight sequential-order
+// reassignment as reorderBoards/reorderPDFDocuments above.
+export async function reorderCanvases(orderedIds: string[]): Promise<void> {
+  const now = Date.now();
+  await db.transaction("rw", db.canvases, async () => {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.canvases.update(orderedIds[i], { order: i + 1, updatedAt: now });
+    }
+  });
 }
 
 export async function updateCanvas(
@@ -480,8 +666,31 @@ export async function searchAll(query: string): Promise<SearchResults> {
     db.pdfDocuments.toArray(),
   ]);
   return {
-    notebooks: notebooks.filter((n) => n.name.toLowerCase().includes(q)),
-    boards: boards.filter((b) => b.name.toLowerCase().includes(q)),
-    pdfs: pdfs.filter((p) => p.name.toLowerCase().includes(q)),
+    // Trashed items are excluded from search — same as every other normal
+    // list query (see § Trash above); find them via the Trash view instead.
+    notebooks: notebooks.filter((n) => n.deletedAt == null && n.name.toLowerCase().includes(q)),
+    boards: boards.filter((b) => b.deletedAt == null && b.name.toLowerCase().includes(q)),
+    pdfs: pdfs.filter((p) => p.deletedAt == null && p.name.toLowerCase().includes(q)),
   };
+}
+
+// --- Trash view -------------------------------------------------------------
+// Flat listing of every soft-deleted Notebook/Board/PDFDocument, regardless
+// of whether a listed Board/PDFDocument's parent Notebook is itself trashed
+// (deliberately not deduplicated/nested — see data-model.md § Trash for why:
+// simplicity over a parent/child-aware tree view for v1). Each item is
+// restored or permanently deleted independently by the Trash UI.
+export interface TrashedItems {
+  notebooks: Notebook[];
+  boards: Board[];
+  pdfs: PDFDocument[];
+}
+
+export async function getTrashedItems(): Promise<TrashedItems> {
+  const [notebooks, boards, pdfs] = await Promise.all([
+    db.notebooks.filter((n) => n.deletedAt != null).toArray(),
+    db.boards.filter((b) => b.deletedAt != null).toArray(),
+    db.pdfDocuments.filter((p) => p.deletedAt != null).toArray(),
+  ]);
+  return { notebooks, boards, pdfs };
 }
