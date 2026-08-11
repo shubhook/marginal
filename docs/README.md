@@ -17,6 +17,9 @@ Marginal is a **local-first notebook tool** combining three surfaces:
 
 Built for one user (Khakha) for daily personal use: coursework notes, project sketches, PDF markup on readings.
 
+> [!NOTE]
+> Just here to get oriented, not to write code or run an agent session? [`docs/human/`](./human/README.md) is a short, plain-language layer on top of this folder — a few minutes' read instead of the full set below.
+
 ---
 
 ## Documentation Structure
