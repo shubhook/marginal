@@ -12,7 +12,7 @@ This is a **personal tool for one user** with direct communication. Optimize for
 
 ### 2. Don't Skip the Build Order
 
-Foundation → Notebook nav → Surface 1 (canvas) → Surface 2 (PDF) → Surface 3 (linked canvases) → Cross-layer → Polish.
+Foundation → Notebook nav → Surface 1 (canvas) → Surface 2 (PDF) → Surface 3 (linked canvases) → Polish.
 
 **Why:** Infrastructure (coordinate transforms) must be validated in isolation before any UI depends on it. If the math is wrong, every surface inherits the bug.
 
@@ -38,7 +38,7 @@ Current schema lives in `src/storage/types.ts` and `src/storage/db.ts`.
 - Reflect changes back into `docs/data-model.md` in the same commit
 - The doc and code must not drift
 - Notebook hierarchy is flat (no nesting) — don't add nesting speculatively
-- Cross-layer strokes store as two linked segments (shared `strokeGroupId`), not one unified element
+- A Page's markup lives in one shared tldraw store, shapes tagged by which Canvas was active when drawn — not split per-canvas (cross-layer drawing's two-segment storage was tried and dropped; see PRD.md changelog)
 
 ### 5. Storage is Behind an Interface
 
@@ -57,7 +57,7 @@ A milestone is done when:
 2. **It doesn't break a previously-working milestone** (spot check the previous surface still functions)
 3. **Any schema or architecture change is reflected** in docs in the same pass
 
-Don't mark something done because the happy path renders once. Click around it. Try boundary cases. On cross-layer drawing, test: what happens if you pan mid-stroke? What if you zoom one panel after drawing?
+Don't mark something done because the happy path renders once. Click around it. Try boundary cases. On linked canvases, test: what happens to visibility when you switch tabs mid-draw, or delete the active canvas?
 
 ### 7. When in Doubt, Ask
 
@@ -129,7 +129,7 @@ bun src/canvas/coordinates.test.ts
 ### Branching
 
 No strict branch naming, but aim for clarity:
-- Feature: `feature/pdf-import`, `feature/cross-layer-drawing`
+- Feature: `feature/pdf-import`, `feature/linked-canvases`
 - Fix: `fix/coordinate-rounding`, `fix/hydration-mismatch`
 - Research: `research/ocr-options`
 
@@ -148,7 +148,7 @@ Examples:
 ```
 feat: add PDF import and page rendering
 fix: coordinate rounding causing stroke offset
-docs: update contributor guide for cross-layer drawing
+docs: update contributor guide for linked canvases
 test: add unit tests for zoom centering
 ```
 

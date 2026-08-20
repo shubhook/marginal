@@ -52,7 +52,7 @@ Built for one user (Khakha) for daily personal use: coursework notes, project sk
 - **Explicit over implicit** — flag ambiguities instead of silently choosing the "safe" option.
 
 > [!IMPORTANT]
-> Strict build order: Foundation → Surface 1 → Surface 2 → Surface 3 → Cross-layer → Polish. Don't skip ahead.
+> Strict build order: Foundation → Surface 1 → Surface 2 → Surface 3 → Polish. Don't skip ahead.
 
 ---
 

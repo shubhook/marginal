@@ -26,11 +26,10 @@ Read `PRD.md` for product intent, `UI.md` for interaction/layout rules, `STYLING
 
 ## 2. Build order — do not skip ahead
 
-The PRD defines a strict build order: Foundation → Notebook nav → Surface 1 (canvas) → Surface 2 (PDF direct markup) → Surface 3 (linked canvases) → Cross-layer drawing → Polish.
+The PRD defines a strict build order: Foundation → Notebook nav → Surface 1 (canvas) → Surface 2 (PDF direct markup) → Surface 3 (linked canvases) → Polish.
 
 Reasons this order exists, not just convention:
 - The coordinate-transform system is infrastructure every later surface depends on. It must be validated in isolation (write a small test/demo proving PDF-space ↔ canvas-space ↔ screen-space conversion is correct) before any UI is built on top of it. If this is wrong, every surface built on it will misbehave in ways that are hard to trace back to the root cause.
-- Cross-layer drawing (Section 6) explicitly depends on Surface 2 and Surface 3 both already working. Do not attempt it earlier — there's nothing to test it against.
 - Each surface should reach a genuinely working, manually-verified state before the next begins. Don't move to the next milestone with a known-broken previous one "to fix later."
 
 If asked to build multiple surfaces in one session, push back and suggest splitting into separate sessions/commits — this isn't bureaucracy, it's what keeps bugs traceable to a specific layer.
@@ -41,7 +40,7 @@ Current schema lives in `PRD.md` §4. Rules for changing it:
 
 - `Notebook`, `Board`, `PDFDocument`, `Page`, `Canvas` are the current top-level entities. Any schema change should be reflected back into `PRD.md` §4 in the same commit/session — the doc and the code must not drift.
 - Notebook hierarchy is flat (no nesting) by deliberate decision — don't add nesting speculatively. If it's genuinely needed, that's a PRD-level decision to revisit explicitly, not a quiet schema addition.
-- Cross-layer strokes (PDF↔canvas continuous drawing) are stored as two linked segments sharing a `strokeGroupId`, not as one unified element — the two halves live in different coordinate spaces and must be able to render independently if either panel's pan/zoom changes.
+- A Page's markup (direct and every linked Canvas's) lives in one shared tldraw store, with each shape tagged by which Canvas was active when it was drawn — not split across per-canvas stores or coordinate spaces. Cross-layer drawing (continuous PDF↔canvas strokes stored as two linked segments) was tried and dropped for this reason; don't reintroduce it without revisiting this decision explicitly first.
 
 ## 4. Coordinate system — the one thing to get right
 
@@ -64,7 +63,7 @@ A milestone (as listed in PRD §5) is done when:
 2. It doesn't break a previously-working milestone (spot check the previous surface still functions).
 3. Any schema or architecture change it required is reflected in PRD.md / this file in the same pass.
 
-Don't mark something done because the happy path renders once. Click around it. Try the boundary cases mentioned in the relevant milestone description (e.g. for cross-layer drawing: what happens if you pan mid-stroke, what happens if you zoom one panel after drawing).
+Don't mark something done because the happy path renders once. Click around it. Try the boundary cases mentioned in the relevant milestone description (e.g. for linked canvases: what happens to visibility when you switch tabs mid-draw, or delete the active canvas).
 
 ## 7. When in doubt
 
@@ -72,4 +71,5 @@ This is a personal tool for one user with a known, direct communication style. I
 
 ## Changelog
 
+- 2026-08-20 — Cross-layer drawing dropped (see PRD.md changelog for why); removed from the build order, data model rules, and milestone-done examples.
 - 2026-08-04 — Initial AGENTS.md drafted alongside PRD.
