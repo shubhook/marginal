@@ -47,20 +47,13 @@ Sidebar should be collapsible (keyboard shortcut, TBD — placeholder `Cmd+B` ma
 - Only one Canvas is "active" per page at a time (tab selection = active state). Switching tabs swaps which Canvas's PDF-spillover strokes render on the page — this should feel instantaneous, no loading state for a local operation.
 - Closing the panel does not delete anything — it just hides the panel. The active-canvas state and its spillover on the PDF page persist.
 
-## 6. Cross-layer drawing (PDF ↔ linked canvas)
-
-- Only active when the right panel is open (there's no "cross boundary" target when it's closed).
-- A drag that starts on the PDF page and crosses into the panel (or vice versa) should render as one continuous, unbroken stroke visually, in real time, while drawing.
-- After the stroke completes, it's split and stored per §"Cross-layer strokes" in AGENTS.md — this is a storage-layer detail, invisible to the user in the moment of drawing.
-- Known, accepted limitation: if either side is panned/zoomed after a cross-boundary stroke is drawn, the two halves can visually separate (they're independently-transformed coordinate spaces). This is not a bug to silently "fix" with a hack — if it becomes a real usability problem in practice, that's a decision to revisit in PRD.md, e.g. locking zoom-sync between the two panels for the duration a cross-boundary stroke exists.
-
-## 7. Empty / default states
+## 6. Empty / default states
 
 - New Notebook: empty state should surface a clear "create Board" / "import PDF" affordance — no dead-end blank screens.
 - New PDF page: auto-creates Canvas 0 as the active canvas (per AGENTS.md data model rule) — there is never a state where a page has "no active canvas."
 - New Board: opens directly into an empty infinite canvas, ready to draw — no intermediate "name your board" modal blocking the first stroke. Default name can be assigned automatically (e.g. "Untitled Board — Aug 4"), renamed later from the sidebar.
 
-## 8. Keyboard shortcuts (v1 baseline)
+## 7. Keyboard shortcuts (v1 baseline)
 
 | Key | Action |
 |---|---|
@@ -77,4 +70,5 @@ This list is a starting point, not final — extend as real usage surfaces frict
 
 ## Changelog
 
+- 2026-08-20 — Removed § Cross-layer drawing (PDF ↔ linked canvas) — the feature was dropped; see PRD.md changelog. Remaining sections renumbered.
 - 2026-08-04 — Initial UI.md drafted alongside PRD and AGENTS.md.

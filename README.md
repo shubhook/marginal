@@ -13,7 +13,6 @@ A personal, local-first notebook tool combining an infinite freeform canvas, PDF
 - **Canvas mode** — Excalidraw-style infinite canvas for freehand notes, shapes, and text.
 - **PDF markup** — import a PDF, draw directly on the page.
 - **Linked canvases** — open expanded, independent note-canvases attached to any PDF page, without cluttering the page itself.
-- **Cross-layer drawing** — draw a single continuous stroke starting on the PDF page and flowing onto a linked canvas.
 - **Notebooks** — group related boards and PDFs together instead of one flat list of everything.
 
 ---
@@ -63,7 +62,7 @@ Requires Node (LTS). No environment variables or backend setup needed for local 
 
 ## Build order
 
-Foundation → Canvas-only boards → PDF import + direct markup → Linked side-canvases → Cross-layer drawing → Polish (export, shortcuts, search). Full detail in `PRD.md` §5.
+Foundation → Canvas-only boards → PDF import + direct markup → Linked side-canvases → Polish (export, shortcuts, search). Full detail in `PRD.md` §5.
 
 > [!IMPORTANT]
 > Do not skip ahead in the build order — see `AGENTS.md` §2 for why the order matters.

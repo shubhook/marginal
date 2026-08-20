@@ -44,13 +44,13 @@ Notebook
   └── PDFDocument
         └── Page        (fixed dimensions, matches source PDF page)
               ├── activeCanvasId
-              └── Canvas[]   (linked side-canvases, each independent coordinate space)
+              └── Canvas[]   (linked side-canvases, tagged shapes in the Page's shared store)
 ```
 
 - A **Notebook** is a flat container of Boards and PDFDocuments. No nested notebooks (flat hierarchy — decided to avoid folder-in-folder feature creep; revisit only if flat genuinely becomes unusable in practice).
 - A **Board** is a standalone infinite canvas, not attached to any PDF.
 - A **PDFDocument** holds Pages. Each Page can have direct markup and/or multiple linked Canvases.
-- Only one Canvas per Page is "active" at a time — its PDF-side spillover strokes are the only ones rendered on the page. Switching active canvas swaps visible spillover.
+- Only one Canvas per Page is "active" at a time. All markup for a Page lives in a single shared tldraw store, with every shape tagged by which Canvas was active when it was drawn — switching the active canvas shows only that canvas's tagged shapes on the page. (Earlier versions of this app gave each linked Canvas its own coordinate space and split cross-boundary strokes into linked segments; that approach was dropped — see Changelog.)
 
 This model is expected to evolve. Treat it as the current best understanding, not a locked schema — see AGENTS.md for how to handle schema changes safely.
 
@@ -73,13 +73,9 @@ This model is expected to evolve. Treat it as the current best understanding, no
 
 ### Surface 3 — Linked side-canvases
 - Corner button on PDF page → right panel → per-page canvas tabs
-- Each linked canvas is an independent tldraw instance, own coordinate space
+- Every linked canvas shares one tldraw store per Page, shapes tagged by `meta.canvasId` — not a separate coordinate space per canvas (see § Architecture note below)
 - Auto-create canvas 0 per page (no null active-canvas state)
-
-### Cross-layer — continuous PDF↔canvas drawing
-- Transparent screen-space overlay capturing drags across the panel boundary
-- Stroke-splitting at panel boundary, stored as linked segments (shared `strokeGroupId`)
-- Active-canvas spillover rendering rule
+- Active-canvas visibility rule: switching tabs shows only the active canvas's tagged shapes on the page
 
 ### Polish
 - Export (PNG/PDF)
@@ -111,4 +107,5 @@ If any of these three fail in practice, that's a signal to revisit this PRD, not
 
 ## Changelog
 
+- 2026-08-20 — Cross-layer drawing (continuous PDF↔canvas strokes, linked-segment storage) dropped from the build order and removed from §4/§5. Superseded by the single-shared-store-per-Page model (one tldraw store per Page, shapes tagged by `meta.canvasId`), which eliminates the panel boundary the feature existed to draw across. See `docs/data-model.md` § Cross-Layer Strokes (removed) and `docs/architecture.md` for the historical record of why.
 - 2026-08-04 — Initial PRD drafted from planning conversation. Flat notebook hierarchy decided. Non-goals section added explicitly to prevent scope creep.

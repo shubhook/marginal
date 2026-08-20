@@ -89,7 +89,7 @@ Add PDF page navigation arrows to flip between pages.
 
 ## Why
 
-Current milestone (Surface 2) requires navigating multi-page PDFs. This unblocks testing cross-layer drawing later.
+Current milestone (Surface 2) requires navigating multi-page PDFs. This unblocks testing Surface 3 (linked canvases) later.
 
 ## How
 
