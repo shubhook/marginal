@@ -26,7 +26,7 @@ Read `PRD.md` for product intent, `UI.md` for interaction/layout rules, `STYLING
 
 ## 2. Build order — do not skip ahead
 
-The PRD defines a strict build order: Foundation → Notebook nav → Surface 1 (canvas) → Surface 2 (PDF direct markup) → Surface 3 (linked canvases) → Polish.
+The PRD defines a strict build order: Foundation → Notebook nav → Surface 1 (canvas) → Surface 2 (PDF direct markup) → Surface 3 (linked canvases) → Surface 4 (markdown notes) → Polish.
 
 Reasons this order exists, not just convention:
 - The coordinate-transform system is infrastructure every later surface depends on. It must be validated in isolation (write a small test/demo proving PDF-space ↔ canvas-space ↔ screen-space conversion is correct) before any UI is built on top of it. If this is wrong, every surface built on it will misbehave in ways that are hard to trace back to the root cause.
@@ -38,7 +38,8 @@ If asked to build multiple surfaces in one session, push back and suggest splitt
 
 Current schema lives in `PRD.md` §4. Rules for changing it:
 
-- `Notebook`, `Board`, `PDFDocument`, `Page`, `Canvas` are the current top-level entities. Any schema change should be reflected back into `PRD.md` §4 in the same commit/session — the doc and the code must not drift.
+- `Notebook`, `Board`, `PDFDocument`, `Page`, `Canvas`, `Note` are the current top-level entities. Any schema change should be reflected back into `PRD.md` §4 in the same commit/session — the doc and the code must not drift.
+- `Note` (markdown) is deliberately outside the coordinate system entirely — it doesn't have PDF-space or canvas-space coordinates, and its editor (CodeMirror 6) is a separate primitive from tldraw. Don't route it through `pdfToWorld`/`worldToPdf` or the shared Page tldraw store; it's plain text with its own persistence.
 - Notebook hierarchy is flat (no nesting) by deliberate decision — don't add nesting speculatively. If it's genuinely needed, that's a PRD-level decision to revisit explicitly, not a quiet schema addition.
 - A Page's markup (direct and every linked Canvas's) lives in one shared tldraw store, with each shape tagged by which Canvas was active when it was drawn — not split across per-canvas stores or coordinate spaces. Cross-layer drawing (continuous PDF↔canvas strokes stored as two linked segments) was tried and dropped for this reason; don't reintroduce it without revisiting this decision explicitly first.
 
@@ -71,5 +72,6 @@ This is a personal tool for one user with a known, direct communication style. I
 
 ## Changelog
 
+- 2026-08-20 — Surface 4 (markdown notes) added to the build order, after Surface 3. New `Note` top-level entity, explicitly outside the coordinate system and the shared tldraw store — see §3 and PRD.md §4/§5.
 - 2026-08-20 — Cross-layer drawing dropped (see PRD.md changelog for why); removed from the build order, data model rules, and milestone-done examples.
 - 2026-08-04 — Initial AGENTS.md drafted alongside PRD.

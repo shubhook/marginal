@@ -10,11 +10,12 @@
 
 ## 1. What this is
 
-Marginal is a personal, local-first notebook tool. It combines three things that are normally separate apps:
+Marginal is a personal, local-first notebook tool. It combines four things that are normally separate apps:
 
 1. An infinite freeform canvas (Excalidraw-like) for freehand notes.
 2. A PDF viewer with direct markup on the page.
 3. Linked side-canvases attached to a PDF page, for expanded notes that don't fit in the margin.
+4. Markdown notes with Obsidian-style live preview, for structured/written notes that don't belong on a canvas.
 
 It is built for one user (Khakha), for daily personal use — coursework notes, project sketches, PDF markup on readings/papers. It is not a SaaS product, not built for other users, and not optimizing for onboarding, multi-tenancy, or growth. Every scoping decision defaults toward "what makes this pleasant for one person to use every day," not "what makes this generalizable."
 
@@ -25,7 +26,7 @@ Existing tools force a tradeoff:
 - Notability/GoodNotes: good PDF + canvas hybrid, but not self-hosted/local-first, not extensible, platform-locked.
 - Obsidian/Notion: good structured notes, poor freeform drawing, no native PDF markup.
 
-Marginal exists to combine canvas + PDF markup + notebook structure without vendor lock-in, running entirely local (no server dependency for the core loop).
+Marginal exists to combine canvas + PDF markup + markdown notes + notebook structure without vendor lock-in, running entirely local (no server dependency for the core loop). The markdown surface exists so a structured/written note never forces a context switch to Obsidian — same rationale as folding PDF markup in rather than exporting to a separate PDF app.
 
 ## 3. Non-goals (explicit — revisit if priorities change)
 
@@ -45,11 +46,13 @@ Notebook
         └── Page        (fixed dimensions, matches source PDF page)
               ├── activeCanvasId
               └── Canvas[]   (linked side-canvases, tagged shapes in the Page's shared store)
+  └── Note             (markdown document, live-preview editing)
 ```
 
-- A **Notebook** is a flat container of Boards and PDFDocuments. No nested notebooks (flat hierarchy — decided to avoid folder-in-folder feature creep; revisit only if flat genuinely becomes unusable in practice).
+- A **Notebook** is a flat container of Boards, PDFDocuments, and Notes. No nested notebooks (flat hierarchy — decided to avoid folder-in-folder feature creep; revisit only if flat genuinely becomes unusable in practice).
 - A **Board** is a standalone infinite canvas, not attached to any PDF.
 - A **PDFDocument** holds Pages. Each Page can have direct markup and/or multiple linked Canvases.
+- A **Note** is a standalone markdown document — plain-text source stored inline (no separate blob table; markdown is small enough that Dexie's normal row read is fine, unlike `PDFFile`). Sits alongside Boards and PDFDocuments in the sidebar and the trash/reorder system, unrelated to the PDF/canvas coordinate system entirely (no `pdfToWorld`/`worldToPdf` involved — it's pure text).
 - Only one Canvas per Page is "active" at a time. All markup for a Page lives in a single shared tldraw store, with every shape tagged by which Canvas was active when it was drawn — switching the active canvas shows only that canvas's tagged shapes on the page. (Earlier versions of this app gave each linked Canvas its own coordinate space and split cross-boundary strokes into linked segments; that approach was dropped — see Changelog.)
 
 This model is expected to evolve. Treat it as the current best understanding, not a locked schema — see AGENTS.md for how to handle schema changes safely.
@@ -76,6 +79,13 @@ This model is expected to evolve. Treat it as the current best understanding, no
 - Every linked canvas shares one tldraw store per Page, shapes tagged by `meta.canvasId` — not a separate coordinate space per canvas (see § Architecture note below)
 - Auto-create canvas 0 per page (no null active-canvas state)
 - Active-canvas visibility rule: switching tabs shows only the active canvas's tagged shapes on the page
+
+### Surface 4 — Markdown notes
+- CodeMirror 6 (new dependency) with markdown language mode, as its own isolated editor primitive — not layered onto tldraw the way Surfaces 1–3 are
+- True live-preview editing (Obsidian-style): markdown renders inline as you type (bold looks bold, links look like links); raw syntax characters (`**`, `#`, `[]()`) only reveal on the line the cursor is currently on
+- Dexie `notes` table, notebook-aware, markdown source stored inline as a string field (no separate blob table — see §4)
+- Sidebar entry alongside Boards/PDFs; reuses the existing trash/reorder system unchanged
+- No coordinate-system involvement — this surface is intentionally independent of `pdfToWorld`/`worldToPdf` (see AGENTS.md §4), so it can be built without touching or re-validating that layer
 
 ### Polish
 - Export (PNG/PDF)
@@ -107,5 +117,6 @@ If any of these three fail in practice, that's a signal to revisit this PRD, not
 
 ## Changelog
 
+- 2026-08-20 — Markdown notes added as a fourth top-level entity (`Note`, sibling to `Board`/`PDFDocument`) and new build-order milestone (Surface 4), decided after the previous three surfaces + trash/reorder shipped. Live preview is true Obsidian-style inline rendering (CodeMirror 6), not a simpler split-pane — chosen deliberately over the cheaper option because it's what was asked for. This surface has no coordinate-system dependency, so it doesn't require re-validating `pdfToWorld`/`worldToPdf`.
 - 2026-08-20 — Cross-layer drawing (continuous PDF↔canvas strokes, linked-segment storage) dropped from the build order and removed from §4/§5. Superseded by the single-shared-store-per-Page model (one tldraw store per Page, shapes tagged by `meta.canvasId`), which eliminates the panel boundary the feature existed to draw across. See `docs/data-model.md` § Cross-Layer Strokes (removed) and `docs/architecture.md` for the historical record of why.
 - 2026-08-04 — Initial PRD drafted from planning conversation. Flat notebook hierarchy decided. Non-goals section added explicitly to prevent scope creep.
